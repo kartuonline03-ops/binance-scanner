@@ -144,6 +144,9 @@
   .card .badge.buy{background:#0ecb8122; color:var(--buy);}
   .card .badge.sell{background:#f6465d22; color:var(--sell);}
   .card .badge.ongoing{background:#f0b90b22; color:var(--amber);}
+  .card .dirbadge{font-size:10.5px; padding:2px 8px; border-radius:4px; font-weight:800; letter-spacing:.5px;}
+  .card .dirbadge.buy{background:#0ecb8122; color:var(--buy); border:1px solid #0ecb8155;}
+  .card .dirbadge.sell{background:#f6465d22; color:var(--sell); border:1px solid #f6465d55;}
   .card .price{color:var(--blue);}
   .card .tags{display:flex; flex-wrap:wrap; gap:5px; margin:6px 0;}
   .card .tag{font-size:10px; padding:2px 6px; border-radius:4px; background:var(--panel2); color:var(--dim); border:1px solid var(--border);}
@@ -702,6 +705,7 @@ function generateSignal(candles){
     rsi, maFast: last.maFast, maSlow: last.maSlow, crossEvent, barsSinceCross,
     bias: trendBias,
     ongoingLate,
+    pendingDirection: tpSlDirection,
     htfTrend: null,
   };
 }
@@ -938,7 +942,14 @@ function buildCard(r, kind){
   const sym = document.createElement("span"); sym.className="sym"; sym.textContent = r.symbol;
   const badge = document.createElement("span"); badge.className="badge "+kind;
   badge.textContent = kind==="ongoing" ? `TREND ${r.bias}` : `${r.signal} (${r.score>0?"+":""}${r.score})`;
-  row1.appendChild(sym); row1.appendChild(badge);
+  row1.appendChild(sym);
+  if(kind==="ongoing" && r.pendingDirection){
+    const dir = document.createElement("span");
+    dir.className = "dirbadge " + (r.pendingDirection==="BUY" ? "buy" : "sell");
+    dir.textContent = r.pendingDirection==="BUY" ? "B" : "S";
+    row1.appendChild(dir);
+  }
+  row1.appendChild(badge);
   div.appendChild(row1);
 
   const priceLine = document.createElement("div");
