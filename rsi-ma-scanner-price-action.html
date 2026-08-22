@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.02 - 22/8/2026 (+ BSL/SSL & visual BOS/CHoCH/IND di mode SMC)</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.45 - 22/8/2026 (+ zoom mini chart: tombol -/+ & pinch 2 jari)</div>
   </div>
 </header>
 
@@ -422,6 +422,7 @@ const S = {
   pollingMode: false, wsZeroStrikes: 0,
   openDetails: new Set(),        // simpan simbol kartu yg "detail alasan"-nya lagi dibuka, biar gak ke-reset tiap render ulang
   chartScroll: {},               // chartKey (kind|symbol) -> scrollLeft terakhir, biar mini chart gak snap balik ke kanan tiap refresh
+  chartZoom: {},                 // chartKey -> level zoom mini chart (1 = normal), biar bisa diperbesar/dikecilkan per kartu
   // --- state khusus mode SMC Multi-TF ---
   smcCandles: { d1:{}, h4:{}, h1:{}, m5:{} },  // tf -> tradeSymbol -> [candle]
   smcResults: {},                              // display -> hasil analisa SMC
@@ -1655,12 +1656,81 @@ function crossBadge(event){
    MINI CHART SVG: visualisasi zona breakout (hijau), zona pullback/
    koreksi (kuning), dan sisa area (netral), dari candle asli scanner.
    ============================================================ */
+/* ============================================================
+   KONTROL ZOOM MINI CHART — tombol kecil (- / reset / +) buat
+   memperbesar/memperkecil candle di mini chart, dipakai bareng
+   sama renderMiniZoneChart (RSI+MA) & renderSmcMiniChart (SMC).
+   ============================================================ */
+const CHART_ZOOM_MIN = 0.6, CHART_ZOOM_MAX = 2.4, CHART_ZOOM_STEP = 0.3;
+
+function buildChartZoomControls(chartKey){
+  const zoom = S.chartZoom[chartKey] || 1;
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex; justify-content:flex-end; gap:4px; margin-top:6px;";
+
+  const mkBtn = (label, title, onClick)=>{
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.title = title;
+    b.style.cssText = "font-family:var(--mono); font-size:11px; line-height:1; padding:3px 8px; " +
+      "background:#141a21; border:1px solid #1c222b; border-radius:4px; color:#8b949e; cursor:pointer;";
+    b.addEventListener("click", (e)=>{ e.preventDefault(); onClick(); });
+    return b;
+  };
+
+  bar.appendChild(mkBtn("−", "Perkecil chart", ()=>{
+    const cur = S.chartZoom[chartKey] || 1;
+    S.chartZoom[chartKey] = Math.max(CHART_ZOOM_MIN, +(cur - CHART_ZOOM_STEP).toFixed(2));
+    delete S.chartScroll[chartKey];
+    render();
+  }));
+  bar.appendChild(mkBtn(`${Math.round(zoom*100)}%`, "Reset zoom ke 100%", ()=>{
+    S.chartZoom[chartKey] = 1;
+    delete S.chartScroll[chartKey];
+    render();
+  }));
+  bar.appendChild(mkBtn("+", "Perbesar chart", ()=>{
+    const cur = S.chartZoom[chartKey] || 1;
+    S.chartZoom[chartKey] = Math.min(CHART_ZOOM_MAX, +(cur + CHART_ZOOM_STEP).toFixed(2));
+    delete S.chartScroll[chartKey];
+    render();
+  }));
+  return bar;
+}
+
+// pinch-to-zoom (2 jari) di area chart yg bisa digeser -> ubah S.chartZoom[chartKey] realtime
+function attachPinchZoom(scrollArea, chartKey){
+  let pinchStartDist = null, pinchStartZoom = 1;
+  const dist = (t)=> Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
+  scrollArea.addEventListener("touchstart", (e)=>{
+    if(e.touches.length===2){
+      pinchStartDist = dist(e.touches);
+      pinchStartZoom = S.chartZoom[chartKey] || 1;
+    }
+  }, {passive:true});
+  scrollArea.addEventListener("touchmove", (e)=>{
+    if(e.touches.length===2 && pinchStartDist){
+      e.preventDefault();
+      const ratio = dist(e.touches) / pinchStartDist;
+      const next = Math.min(CHART_ZOOM_MAX, Math.max(CHART_ZOOM_MIN, +(pinchStartZoom*ratio).toFixed(2)));
+      if(Math.abs(next - (S.chartZoom[chartKey]||1)) >= 0.05){
+        S.chartZoom[chartKey] = next;
+        delete S.chartScroll[chartKey];
+        render();
+      }
+    }
+  }, {passive:false});
+  scrollArea.addEventListener("touchend", (e)=>{ if(e.touches.length<2) pinchStartDist=null; });
+}
+
 function renderMiniZoneChart(r, chartKey){
   const candles = r.miniCandles;
   if(!candles || candles.length<5 || r.paSwingHigh==null || r.paSwingLow==null) return null;
 
-  const H=130, padT=8, padB=8;
-  const CANDLE_W = 14;               // lebar per candle (px) -> menentukan total lebar chart yg bisa digeser
+  const zoom = S.chartZoom[chartKey] || 1;
+  const H=Math.round(130*zoom), padT=8, padB=8;
+  const CANDLE_W = 14*zoom;               // lebar per candle (px) -> menentukan total lebar chart yg bisa digeser
   const n = candles.length;
   const chartW = Math.max(n*CANDLE_W, 220);
   const AXIS_W = 56;                  // lebar kolom harga di samping (statis, gak ikut geser)
@@ -1825,6 +1895,7 @@ function renderMiniZoneChart(r, chartKey){
   scrollArea.addEventListener("scroll", ()=>{
     S.chartScroll[chartKey] = scrollArea.scrollLeft;
   });
+  attachPinchZoom(scrollArea, chartKey);
 
   // pulihkan posisi geser sebelumnya (kalau ada & masih dlm rentang lebar chart skrg).
   // Kalau belum pernah digeser (chart baru pertama kali render), baru default ke paling kanan (candle terbaru).
@@ -1834,7 +1905,10 @@ function renderMiniZoneChart(r, chartKey){
     scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
   });
 
-  return container;
+  const wrap = document.createElement("div");
+  wrap.appendChild(container);
+  wrap.appendChild(buildChartZoomControls(chartKey));
+  return wrap;
 }
 
 /* ============================================================
@@ -1846,8 +1920,9 @@ function renderSmcMiniChart(r, chartKey){
   const candles = r.miniCandles;
   if(!candles || candles.length<5) return null;
 
-  const H=130, padT=8, padB=8;
-  const CANDLE_W = 14;
+  const zoom = S.chartZoom[chartKey] || 1;
+  const H=Math.round(130*zoom), padT=8, padB=8;
+  const CANDLE_W = 14*zoom;
   const n = candles.length;
   const chartW = Math.max(n*CANDLE_W, 220);
   const AXIS_W = 56;
@@ -2003,6 +2078,7 @@ function renderSmcMiniChart(r, chartKey){
   scrollArea.addEventListener("scroll", ()=>{
     S.chartScroll[chartKey] = scrollArea.scrollLeft;
   });
+  attachPinchZoom(scrollArea, chartKey);
 
   requestAnimationFrame(()=>{
     const saved = S.chartScroll[chartKey];
@@ -2010,7 +2086,10 @@ function renderSmcMiniChart(r, chartKey){
     scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
   });
 
-  return container;
+  const wrap = document.createElement("div");
+  wrap.appendChild(container);
+  wrap.appendChild(buildChartZoomControls(chartKey));
+  return wrap;
 }
 
 /* ============================================================
@@ -2295,6 +2374,7 @@ function renderRsiMa(){
   ]);
   for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
   for(const k of Object.keys(S.chartScroll)){ if(!validKeys.has(k)) delete S.chartScroll[k]; }
+  for(const k of Object.keys(S.chartZoom)){ if(!validKeys.has(k)) delete S.chartZoom[k]; }
 
   document.getElementById("cntBuy").textContent = buys.length;
   document.getElementById("cntSell").textContent = sells.length;
@@ -2320,7 +2400,15 @@ function renderSmc(){
     ...waiting.map(r=>"ongoing|"+r.symbol),
     ...noSetup.map(r=>"analisa|"+r.symbol),
   ]);
+  const validChartKeys = new Set([
+    ...buys.map(r=>"buy|smc|"+r.symbol),
+    ...sells.map(r=>"sell|smc|"+r.symbol),
+    ...waiting.map(r=>"ongoing|smc|"+r.symbol),
+    ...noSetup.map(r=>"analisa|smc|"+r.symbol),
+  ]);
   for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
+  for(const k of Object.keys(S.chartScroll)){ if(k.includes("|smc|") && !validChartKeys.has(k)) delete S.chartScroll[k]; }
+  for(const k of Object.keys(S.chartZoom)){ if(k.includes("|smc|") && !validChartKeys.has(k)) delete S.chartZoom[k]; }
 
   document.getElementById("cntBuy").textContent = buys.length;
   document.getElementById("cntSell").textContent = sells.length;
