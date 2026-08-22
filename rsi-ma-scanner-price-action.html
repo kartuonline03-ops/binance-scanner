@@ -170,6 +170,14 @@
   .card .tag.ob-buy{color:var(--buy); border-color:#0ecb8133;}
   .card .tag.ob-sell{color:var(--sell); border-color:#f6465d33;}
   .card .tag.confirmed{color:var(--buy);}
+  .card .tag.smc-wait{color:var(--amber); border-color:#f0b90b44;}
+  .card .tag.smc-no{color:var(--dim2);}
+  .strategy-tabs{grid-column:1 / -1; display:flex; gap:8px; margin-bottom:2px;}
+  .strategy-tab{
+    flex:1; text-align:center; padding:10px 10px; border-radius:7px; border:1px solid var(--border);
+    background:#0d1015; color:var(--dim); font-family:var(--mono); font-size:12px; cursor:pointer; user-select:none; font-weight:600;
+  }
+  .strategy-tab.active{border-color:var(--blue); color:var(--blue); background:#4da3ff14;}
   .card .tpsl{margin-top:6px; font-size:11.5px;}
   .card .tpsl .entry-line{margin-bottom:3px;}
   .card .tpsl .tp{color:var(--buy);}
@@ -220,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16.50 - 22/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18.44 - 22/8/2026 (+ mode SMC Multi-TF)</div>
   </div>
 </header>
 
@@ -228,6 +236,10 @@
   <section class="panel" id="cfgPanel">
     <h2>Konfigurasi</h2>
     <div class="cfg-grid">
+      <div class="strategy-tabs">
+        <div class="strategy-tab active" id="tabStratRsiMa" data-strat="RSIMA">📈 RSI+MA</div>
+        <div class="strategy-tab" id="tabStratSmc" data-strat="SMC">🎯 SMC Multi-TF</div>
+      </div>
       <div class="field">
         <label>Market</label>
         <select id="cfgMarket">
@@ -235,30 +247,39 @@
           <option value="SPOT">SPOT</option>
         </select>
       </div>
-      <div class="field">
-        <label>Timeframe utama</label>
-        <select id="cfgInterval">
-          <option value="1m">1m</option>
-          <option value="5m" selected>5m</option>
-          <option value="15m">15m</option>
-          <option value="1h">1h</option>
-          <option value="4h">4h</option>
-        </select>
+      <div id="rsimaFields" style="display:contents;">
+        <div class="field">
+          <label>Timeframe utama</label>
+          <select id="cfgInterval">
+            <option value="1m">1m</option>
+            <option value="5m" selected>5m</option>
+            <option value="15m">15m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Konfirmasi MTF</label>
+          <select id="cfgMtfConfirm">
+            <option value="1" selected>Aktif</option>
+            <option value="0">Nonaktif</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Timeframe MTF</label>
+          <select id="cfgMtfInterval">
+            <option value="15m">15m</option>
+            <option value="1h" selected>1h</option>
+            <option value="4h">4h</option>
+          </select>
+        </div>
       </div>
-      <div class="field">
-        <label>Konfirmasi MTF</label>
-        <select id="cfgMtfConfirm">
-          <option value="1" selected>Aktif</option>
-          <option value="0">Nonaktif</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Timeframe MTF</label>
-        <select id="cfgMtfInterval">
-          <option value="15m">15m</option>
-          <option value="1h" selected>1h</option>
-          <option value="4h">4h</option>
-        </select>
+      <div id="smcFields" style="display:none; grid-column:1 / -1;">
+        <div class="cfg-note" style="margin:0 0 4px;">
+          Mode SMC Multi-TF pakai timeframe TETAP mengikuti alur top-down: <b>D1</b> (bias) → <b>H4</b> (arah menengah)
+          → <b>H1</b> (pullback + cek inducement/liquidity) → <b>M5</b> (BOS + Order Block utk entry). Timeframe di atas
+          otomatis dinonaktifkan selama mode ini aktif.
+        </div>
       </div>
 
       <div class="scanmode-tabs">
@@ -316,17 +337,17 @@
     </div>
   </section>
 
-  <div class="section-title buy">Sinyal BUY <span class="count" id="cntBuy">0</span></div>
+  <div class="section-title buy"><span id="titleBuy">Sinyal BUY</span> <span class="count" id="cntBuy">0</span></div>
   <div class="cards" id="listBuy"><div class="empty">(belum ada sinyal BUY)</div></div>
 
-  <div class="section-title sell">Sinyal SELL <span class="count" id="cntSell">0</span></div>
+  <div class="section-title sell"><span id="titleSell">Sinyal SELL</span> <span class="count" id="cntSell">0</span></div>
   <div class="cards" id="listSell"><div class="empty">(belum ada sinyal SELL)</div></div>
 
-  <div class="section-title ongoing">Sedang Berlangsung — Telat Masuk <span class="count" id="cntOngoing">0</span></div>
+  <div class="section-title ongoing"><span id="titleOngoing">Sedang Berlangsung — Telat Masuk</span> <span class="count" id="cntOngoing">0</span></div>
   <div class="cards" id="listOngoing"><div class="empty">(belum ada trend berlangsung yang telat masuk)</div></div>
 
   <details class="section-details" id="analisaSection">
-    <summary>Analisa (HOLD / Netral) <span class="count" id="cntHold">0</span> <span class="hint">— klik utk lihat detail</span></summary>
+    <summary><span id="titleAnalisa">Analisa (HOLD / Netral)</span> <span class="count" id="cntHold">0</span> <span class="hint">— klik utk lihat detail</span></summary>
     <div class="cards" id="listAnalisa"><div class="empty">(tidak ada coin HOLD/Netral saat ini)</div></div>
   </details>
 
@@ -371,6 +392,16 @@ const POLL_MTF_EVERY_TICKS = 20;   // update candle MTF tiap N tick polling (leb
 const INITIAL_FETCH_DELAY_MS = 200;
 
 /* ============================================================
+   MODE SMC MULTI-TF — timeframe TETAP mengikuti alur top-down
+   D1 (bias) -> H4 (arah menengah) -> H1 (pullback + IDM/liquidity)
+   -> M5 (BOS + Order Block, trigger candle utk update realtime)
+   ============================================================ */
+const SMC_TF = { d1:"1d", h4:"4h", h1:"1h", m5:"5m" };
+const SMC_LIMIT = { d1:120, h4:150, h1:200, m5:200 };
+const SMC_TRIGGER_TF = "m5";       // TF yg jadi trigger WS realtime utama
+const SMC_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar Order Block, dlm satuan ATR M5 (kecil, sesuai gaya "SL kecil")
+
+/* ============================================================
    STATE
    ============================================================ */
 let CFG = null;
@@ -391,6 +422,9 @@ const S = {
   pollingMode: false, wsZeroStrikes: 0,
   openDetails: new Set(),        // simpan simbol kartu yg "detail alasan"-nya lagi dibuka, biar gak ke-reset tiap render ulang
   chartScroll: {},               // chartKey (kind|symbol) -> scrollLeft terakhir, biar mini chart gak snap balik ke kanan tiap refresh
+  // --- state khusus mode SMC Multi-TF ---
+  smcCandles: { d1:{}, h4:{}, h1:{}, m5:{} },  // tf -> tradeSymbol -> [candle]
+  smcResults: {},                              // display -> hasil analisa SMC
 };
 
 /* ============================================================
@@ -531,6 +565,33 @@ async function pollMtfOnce(item){
   }catch(e){ /* diamkan, tidak kritis */ }
 }
 
+// Polling fallback khusus mode SMC: update M5 tiap tick (trigger utama),
+// D1/H4/H1 lebih jarang (tidak sekritis M5 utk realtime).
+async function pollSmcSymbolOnce(item, doHtf){
+  const tradeSymbol = item.tradeSymbol, display = item.display;
+  try{
+    const rowsM5 = await fetchHistory(tradeSymbol, SMC_TF.m5, 2);
+    if(rowsM5.length){
+      const list = S.smcCandles.m5[tradeSymbol] || (S.smcCandles.m5[tradeSymbol]=[]);
+      rowsM5.forEach(r=>mergeCandleRow(list, r, SMC_LIMIT.m5));
+      S.livePrice[display] = rowsM5[rowsM5.length-1].close;
+      noteMessage();
+    }
+    if(doHtf){
+      for(const tf of ["h1","h4","d1"]){
+        const rows = await fetchHistory(tradeSymbol, SMC_TF[tf], 2);
+        if(rows.length){
+          const list = S.smcCandles[tf][tradeSymbol] || (S.smcCandles[tf][tradeSymbol]=[]);
+          rows.forEach(r=>mergeCandleRow(list, r, SMC_LIMIT[tf]));
+        }
+      }
+    }
+    recomputeSmc(tradeSymbol, display);
+  }catch(e){
+    log(`Polling SMC gagal untuk ${display}: ${e}`, "err");
+  }
+}
+
 function startPolling(){
   if(pollTimer) return;
   pollIndex = 0; pollTickCount = 0;
@@ -539,6 +600,16 @@ function startPolling(){
     const n = S.symbols.length;
     if(!n) return;
     pollTickCount++;
+    if(STRATEGY_MODE==="SMC"){
+      const doHtf = pollTickCount % POLL_MTF_EVERY_TICKS === 0;
+      for(let i=0;i<POLL_BATCH_SIZE && i<n;i++){
+        const item = S.symbols[pollIndex % n];
+        pollIndex++;
+        await pollSmcSymbolOnce(item, doHtf);
+      }
+      render();
+      return;
+    }
     const doMtf = CFG.mtfConfirm && (pollTickCount % POLL_MTF_EVERY_TICKS === 0);
     for(let i=0;i<POLL_BATCH_SIZE && i<n;i++){
       const item = S.symbols[pollIndex % n];
@@ -998,6 +1069,132 @@ function detectOrderBlock(candles){
 }
 
 /* ============================================================
+   SMC MULTI-TF PIPELINE — top-down: D1 (bias) -> H4 (arah menengah)
+   -> H1 (pullback + cek IDM/liquidity sudah diambil atau belum)
+   -> M5 (BOS searah + Order Block = area entry).
+   Semua fungsi di bawah pakai ulang findSwingPoints/reduceZigzag/
+   analyzeStructure/detectInducement/detectOrderBlock/analyzePriceAction
+   yg sudah ada di atas (konsep sama, cuma dipanggil per-timeframe).
+   ============================================================ */
+function biasLabel(trend){ return trend==="BULLISH" ? "naik" : trend==="BEARISH" ? "turun" : "ranging/tidak jelas"; }
+
+function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
+  const reasons = [];
+  const empty = { status:"NO_SETUP", direction:null, reasons };
+
+  if(!candlesD1 || !candlesH4 || !candlesH1 || !candlesM5) return empty;
+  if(candlesD1.length < STRUCT_LOOKBACK || candlesH4.length < STRUCT_LOOKBACK ||
+     candlesH1.length < Math.max(STRUCT_LOOKBACK, IND_LOOKBACK+5) || candlesM5.length < STRUCT_LOOKBACK+OB_SCAN_BACK){
+    reasons.push("Data candle salah satu timeframe (D1/H4/H1/M5) belum cukup untuk analisa struktur.");
+    return empty;
+  }
+
+  // --- Langkah 1: bias D1 ---
+  const structD1 = analyzeStructure(candlesD1);
+  const biasD1 = structD1.trend || "RANGING";
+  reasons.push(`D1: bias ${biasLabel(structD1.trend)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
+  if(biasD1==="RANGING"){
+    reasons.push("D1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
+    return Object.assign({}, empty, { biasD1 });
+  }
+
+  // --- Langkah 2: arah H4, harus searah bias D1 ---
+  const structH4 = analyzeStructure(candlesH4);
+  const dirH4 = structH4.trend;
+  reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
+  if(!dirH4 || dirH4 !== biasD1){
+    reasons.push(`H4 tidak searah dengan bias D1 (${biasLabel(biasD1)}) -> tunggu H4 align dulu, jangan cari entry.`);
+    return Object.assign({}, empty, { biasD1, dirH4 });
+  }
+  const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+  reasons.push(`D1 & H4 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
+
+  // --- Langkah 3: H1 pullback terhadap H4 ---
+  const paH1 = analyzePriceAction(candlesH1);
+  const lastH1 = candlesH1[candlesH1.length-1];
+  const corrH1 = (paH1.swingHigh!==null && paH1.swingLow!==null) ? classifyCorrection(paH1, lastH1, mainDir) : null;
+  const hasPullback = !!(corrH1 && corrH1.retracePct > 0.1);
+  if(!hasPullback){
+    reasons.push("H1 belum terlihat pullback/retracement yang berarti terhadap H4 -> tunggu koreksi dulu sebelum cari entry.");
+    return Object.assign({}, empty, { biasD1, dirH4, hasPullback:false });
+  }
+  reasons.push(`H1: sedang pullback ~${fmt(corrH1.retracePct*100,0)}% dari swing terakhir (searah koreksi vs H4 ${biasLabel(dirH4)})`);
+
+  // --- Langkah 4: cek IDM (inducement) di H1 sudah diambil / belum ---
+  const indH1 = detectInducement(candlesH1);
+  const idmTaken = !!(indH1 && indH1.expectDir===mainDir && indH1.verdict!=="FAKE");
+  if(!idmTaken){
+    if(indH1 && indH1.expectDir===mainDir && indH1.verdict==="FAKE"){
+      reasons.push("H1: level liquidity minor sempat kesentuh tapi ternyata FAKE (bukan trap, lanjut breakout) -> bukan IDM valid, tunggu setup baru.");
+    }else{
+      reasons.push("H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
+    }
+    return Object.assign({}, empty, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
+  }
+  reasons.push(`H1: IDM sudah diambil (sweep ${indH1.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indH1.verdict}) -> boleh mulai cari trigger entry di M5.`);
+
+  // --- Langkah 5: M5 cari BOS searah H1 & H4 ---
+  const structM5 = analyzeStructure(candlesM5);
+  const bosOk = structM5.trend===dirH4 && structM5.event==="BOS";
+  if(!bosOk){
+    reasons.push(structM5.event==="CHOCH"
+      ? "M5: yang muncul CHoCH (potensi pembalikan), bukan BOS searah rencana -> tunggu, jangan masuk dulu."
+      : "M5: belum ada BOS (Break of Structure) yang searah H1/H4 -> tunggu momentum M5 pecah searah dulu.");
+    return Object.assign({}, empty, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, direction:mainDir });
+  }
+  reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti H1/H4.`);
+
+  // --- Langkah 6: tentukan Order Block M5 sebagai area entry ---
+  const obM5 = detectOrderBlock(candlesM5);
+  if(!obM5 || obM5.direction!==mainDir){
+    reasons.push("M5: BOS sudah ada tapi candle Order Block belum ketemu/tidak searah -> tunggu konfirmasi lanjutan.");
+    return Object.assign({}, empty, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
+  }
+
+  // --- Hitung entry/SL/TP: SL kecil di luar OB, TP dibidik ke swing H1 (baru), syukur2 swing H4 ---
+  const atrArrM5 = calcAtr(candlesM5, ATR_PERIOD);
+  let atrM5 = null;
+  for(let i=atrArrM5.length-1;i>=0;i--){ if(atrArrM5[i]!==null){ atrM5=atrArrM5[i]; break; } }
+  const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
+  const entry = obM5.optimalEntry;
+  let stopLoss, takeProfit, tpLevel;
+  // prioritas TP ke swing H4 kalau posisinya jelas lebih jauh (RR lebih gede), fallback ke swing H1
+  if(mainDir==="BUY"){
+    stopLoss = obM5.zoneBottom - buffer;
+    if(structH4.swingHigh!==null && structH4.swingHigh>entry){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
+    else { takeProfit = paH1.swingHigh; tpLevel="H1"; }
+  }else{
+    stopLoss = obM5.zoneTop + buffer;
+    if(structH4.swingLow!==null && structH4.swingLow<entry){ takeProfit=structH4.swingLow; tpLevel="H4"; }
+    else { takeProfit = paH1.swingLow; tpLevel="H1"; }
+  }
+  const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
+  reasons.push(`Order Block M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
+  reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+
+  return {
+    status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
+    direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
+    ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
+    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+  };
+}
+function recomputeSmc(tradeSymbol, display){
+  const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
+        h1 = S.smcCandles.h1[tradeSymbol], m5 = S.smcCandles.m5[tradeSymbol];
+  if(!m5 || !m5.length) return;
+  const setup = analyzeSmcSetup(d1, h4, h1, m5);
+  setup.symbol = display;
+  setup.price = m5[m5.length-1].close;
+  S.smcResults[display] = setup;
+  if(S.baselineDone){
+    S.closeEventCount++;
+    S.lastCloseInfo = `${display} @ ${new Date().toLocaleTimeString("id-ID",{hour12:false})}`;
+  }
+  scheduleRedraw();
+}
+
+/* ============================================================
    INDIKATOR TAMBAHAN + SINYAL UTAMA — RSI + Moving Average (EMA cross)
    ============================================================ */
 function addIndicators(candles){
@@ -1321,6 +1518,15 @@ function openWsConnection(connId, streamNames, symbolLookup){
         const tradeSymbol = data.s;
         const streamInterval = k.i;
         const display = symbolLookup[tradeSymbol] || tradeSymbol;
+        if(STRATEGY_MODE==="SMC"){
+          const tfKey = Object.keys(SMC_TF).find(k2 => SMC_TF[k2]===streamInterval);
+          if(!tfKey) return;
+          const list = S.smcCandles[tfKey][tradeSymbol] || (S.smcCandles[tfKey][tradeSymbol]=[]);
+          if(tfKey===SMC_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
+          const closed = applyKlineUpdate(list, k, SMC_LIMIT[tfKey]);
+          if(closed) recomputeSmc(tradeSymbol, display);
+          return;
+        }
         if(streamInterval === CFG.interval){
           const list = S.candles[tradeSymbol] || (S.candles[tradeSymbol]=[]);
           S.livePrice[display] = parseFloat(k.c);
@@ -1765,7 +1971,107 @@ function buildCard(r, kind){
   return div;
 }
 
+/* ============================================================
+   KARTU UTK MODE SMC MULTI-TF — tampilkan bias D1, arah H4,
+   status pullback/IDM H1, BOS M5, Order Block, dan entry/SL/TP.
+   ============================================================ */
+function buildSmcCard(r, kind){
+  const div = document.createElement("div");
+  div.className = "card " + kind;
+
+  const row1 = document.createElement("div"); row1.className="row1";
+  const sym = document.createElement("span"); sym.className="sym"; sym.textContent = r.symbol;
+  const badge = document.createElement("span"); badge.className="badge "+kind;
+  const badgeTxt = {ENTRY_BUY:"ENTRY BUY", ENTRY_SELL:"ENTRY SELL", WAIT:"TUNGGU", NO_SETUP:"NO SETUP"};
+  badge.textContent = badgeTxt[r.status] || r.status;
+  row1.appendChild(sym);
+  if(r.direction){
+    const dir = document.createElement("span");
+    dir.className = "dirbadge " + (r.direction==="BUY" ? "buy" : "sell");
+    dir.textContent = r.direction==="BUY" ? "B" : "S";
+    row1.appendChild(dir);
+  }
+  row1.appendChild(badge);
+  div.appendChild(row1);
+
+  const priceLine = document.createElement("div");
+  const liveVal = S.livePrice[r.symbol];
+  const liveDiffers = liveVal!==undefined && liveVal!==null && r.price && Math.abs(liveVal - r.price) > (r.price*0.0000001);
+  priceLine.innerHTML = `price: <span class="price">${fmt(r.price)}</span>` + (liveDiffers ? ` &nbsp; <span class="liveprice">live: ${fmt(liveVal)}</span>` : "");
+  div.appendChild(priceLine);
+
+  const tags = document.createElement("div"); tags.className="tags";
+  if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`D1 bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
+  if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H4 arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
+  if(r.hasPullback!==undefined){
+    const t=document.createElement("span"); t.className = "tag " + (r.hasPullback ? "confirmed" : "smc-no");
+    t.textContent = r.hasPullback ? "H1: pullback OK" : "H1: belum pullback";
+    tags.appendChild(t);
+  }
+  if(r.idmTaken!==undefined){
+    const t=document.createElement("span"); t.className = "tag " + (r.idmTaken ? "confirmed" : "smc-wait");
+    t.textContent = r.idmTaken ? "IDM: sudah diambil" : "IDM: belum diambil (liquidity)";
+    tags.appendChild(t);
+  }
+  if(r.bosM5!==undefined){
+    const t=document.createElement("span"); t.className = "tag " + (r.bosM5 ? "confirmed" : "smc-wait");
+    t.textContent = r.bosM5 ? "M5: BOS searah" : "M5: BOS blm ada";
+    tags.appendChild(t);
+  }
+  if(tags.children.length) div.appendChild(tags);
+
+  if(r.ob){
+    const obLine = document.createElement("div"); obLine.className="note";
+    obLine.textContent = `Order Block M5: ${fmt(r.ob.zoneBottom)} - ${fmt(r.ob.zoneTop)}${r.ob.mitigated? " (sudah pernah diretest)":" (fresh)"}`;
+    div.appendChild(obLine);
+  }
+
+  if(r.entry!==undefined && r.entry!==null && r.stopLoss!==undefined && r.takeProfit!==undefined){
+    const tpsl = document.createElement("div"); tpsl.className="tpsl";
+    tpsl.innerHTML = `<div class="entry-line"><b>Entry</b>: ${fmt(r.entry)}</div>` +
+      `<div class="tpsl-line"><span class="tp">(TP ${r.tpLevel||""}): ${fmt(r.takeProfit)}</span> &nbsp; <span class="sl">(SL): ${fmt(r.stopLoss)}</span></div>` +
+      (r.rr ? `<div style="color:var(--dim); margin-top:2px;">RR ~${fmt(r.rr,2)}</div>` : "");
+    div.appendChild(tpsl);
+  }
+
+  if(kind==="ongoing"){
+    const note = document.createElement("div"); note.className="note";
+    note.textContent = "(masih menunggu — lihat detail alasan utk tau tahap mana yg belum terpenuhi)";
+    div.appendChild(note);
+  }
+
+  if(r.reasons && r.reasons.length){
+    const det = document.createElement("details");
+    const detKey = kind + "|" + r.symbol;
+    det.open = S.openDetails.has(detKey);
+    det.addEventListener("toggle", ()=>{
+      if(det.open) S.openDetails.add(detKey); else S.openDetails.delete(detKey);
+    });
+    const sum = document.createElement("summary"); sum.textContent = "detail alur D1→H4→H1→M5";
+    det.appendChild(sum);
+    const ul = document.createElement("ul"); ul.className="reasons";
+    r.reasons.forEach(t=>{ const li=document.createElement("li"); li.textContent=t; ul.appendChild(li); });
+    det.appendChild(ul);
+    div.appendChild(det);
+  }
+
+  return div;
+}
+
 function render(){
+  if(STRATEGY_MODE==="SMC") renderSmc(); else renderRsiMa();
+
+  document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
+  document.getElementById("stMsgCount").textContent = S.msgCount;
+  const age = S.lastMsgTime ? ((Date.now()-S.lastMsgTime)/1000).toFixed(0)+"s lalu" : "-";
+  document.getElementById("stMsgAge").textContent = age;
+  document.getElementById("stMsgAgeWrap").className = "stat" + (S.lastMsgTime && (Date.now()-S.lastMsgTime)>WATCHDOG_STALE_MS ? " warn":"");
+  document.getElementById("stCloseCount").textContent = S.closeEventCount;
+  document.getElementById("stConnCount").textContent = `${S.connCount} / ${S.disconnCount}`;
+  document.getElementById("stLastClose").textContent = S.lastCloseInfo;
+}
+
+function renderRsiMa(){
   const results = Object.values(S.results);
   const buys = results.filter(r=>r.signal==="BUY").sort((a,b)=>b.score-a.score);
   const sells = results.filter(r=>r.signal==="SELL").sort((a,b)=>a.score-b.score);
@@ -1787,25 +2093,43 @@ function render(){
   document.getElementById("cntOngoing").textContent = ongoing.length;
   document.getElementById("cntHold").textContent = holds.length;
 
-  fillList("listBuy", buys, "buy", "(belum ada sinyal BUY)");
-  fillList("listSell", sells, "sell", "(belum ada sinyal SELL)");
-  fillList("listOngoing", ongoing, "ongoing", "(belum ada trend berlangsung yang telat masuk)");
-  fillList("listAnalisa", holds, "analisa", "(tidak ada coin HOLD/Netral saat ini)");
-
-  document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
-  document.getElementById("stMsgCount").textContent = S.msgCount;
-  const age = S.lastMsgTime ? ((Date.now()-S.lastMsgTime)/1000).toFixed(0)+"s lalu" : "-";
-  document.getElementById("stMsgAge").textContent = age;
-  document.getElementById("stMsgAgeWrap").className = "stat" + (S.lastMsgTime && (Date.now()-S.lastMsgTime)>WATCHDOG_STALE_MS ? " warn":"");
-  document.getElementById("stCloseCount").textContent = S.closeEventCount;
-  document.getElementById("stConnCount").textContent = `${S.connCount} / ${S.disconnCount}`;
-  document.getElementById("stLastClose").textContent = S.lastCloseInfo;
+  fillList("listBuy", buys, "buy", "(belum ada sinyal BUY)", buildCard);
+  fillList("listSell", sells, "sell", "(belum ada sinyal SELL)", buildCard);
+  fillList("listOngoing", ongoing, "ongoing", "(belum ada trend berlangsung yang telat masuk)", buildCard);
+  fillList("listAnalisa", holds, "analisa", "(tidak ada coin HOLD/Netral saat ini)", buildCard);
 }
-function fillList(elId, items, kind, emptyTxt){
+
+function renderSmc(){
+  const results = Object.values(S.smcResults);
+  const buys = results.filter(r=>r.status==="ENTRY_BUY").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const sells = results.filter(r=>r.status==="ENTRY_SELL").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const waiting = results.filter(r=>r.status==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  const noSetup = results.filter(r=>r.status==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+
+  const validKeys = new Set([
+    ...buys.map(r=>"buy|"+r.symbol),
+    ...sells.map(r=>"sell|"+r.symbol),
+    ...waiting.map(r=>"ongoing|"+r.symbol),
+    ...noSetup.map(r=>"analisa|"+r.symbol),
+  ]);
+  for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
+
+  document.getElementById("cntBuy").textContent = buys.length;
+  document.getElementById("cntSell").textContent = sells.length;
+  document.getElementById("cntOngoing").textContent = waiting.length;
+  document.getElementById("cntHold").textContent = noSetup.length;
+
+  fillList("listBuy", buys, "buy", "(belum ada setup entry BUY)", buildSmcCard);
+  fillList("listSell", sells, "sell", "(belum ada setup entry SELL)", buildSmcCard);
+  fillList("listOngoing", waiting, "ongoing", "(belum ada yg sedang menunggu IDM/BOS)", buildSmcCard);
+  fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSmcCard);
+}
+
+function fillList(elId, items, kind, emptyTxt, buildFn){
   const el = document.getElementById(elId);
   el.innerHTML = "";
   if(!items.length){ const e=document.createElement("div"); e.className="empty"; e.textContent=emptyTxt; el.appendChild(e); return; }
-  items.forEach(r => el.appendChild(buildCard(r, kind)));
+  items.forEach(r => el.appendChild((buildFn||buildCard)(r, kind)));
 }
 
 /* ============================================================
@@ -1825,6 +2149,7 @@ function readConfig(){
     mtfConfirm: document.getElementById("cfgMtfConfirm").value === "1",
     mtfInterval: document.getElementById("cfgMtfInterval").value,
     manualSymbols: manualSymbols,
+    strategyMode: STRATEGY_MODE,
   };
 }
 
@@ -1834,7 +2159,7 @@ async function startScan(){
     log("Mode \"Scan Coin Tertentu\" aktif tapi belum ada coin yang dicentang/diisi.", "err");
     return;
   }
-  if(CFG.mtfConfirm && CFG.mtfInterval === CFG.interval){
+  if(CFG.strategyMode!=="SMC" && CFG.mtfConfirm && CFG.mtfInterval === CFG.interval){
     log("Timeframe MTF sama dengan timeframe utama — MTF dimatikan otomatis untuk request ini.", "warn");
     CFG.mtfConfirm = false;
   }
@@ -1846,9 +2171,12 @@ async function startScan(){
   document.getElementById("liveDot").classList.add("live");
   document.getElementById("wsPill").textContent = "WS: CONNECTING";
   document.getElementById("wsPill").className = "status-pill";
-  document.getElementById("headerSub").textContent = `Market: ${CFG.market} | Timeframe: ${CFG.interval}${CFG.mtfConfirm ? " | MTF: "+CFG.mtfInterval : ""}`;
+  document.getElementById("headerSub").textContent = CFG.strategyMode==="SMC"
+    ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5`
+    : `Market: ${CFG.market} | Timeframe: ${CFG.interval}${CFG.mtfConfirm ? " | MTF: "+CFG.mtfInterval : ""}`;
 
   S.symbols=[]; S.candles={}; S.htfCandles={}; S.results={}; S.livePrice={}; S.sockets=[]; S.connectStart={};
+  S.smcCandles={ d1:{}, h4:{}, h1:{}, m5:{} }; S.smcResults={};
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
   render();
@@ -1870,15 +2198,25 @@ async function startScan(){
   if(!S.symbols.length){ log("Tidak ada coin yang lolos filter.", "warn"); stopScan(); return; }
 
   const symbolLookup = {};
-  log(`Mengambil riwayat candle awal untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`);
+  const isSmc = CFG.strategyMode==="SMC";
+  log(isSmc
+    ? `Mengambil riwayat candle awal (D1, H4, H1, M5) untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`
+    : `Mengambil riwayat candle awal untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`);
   let ok=0;
   for(let i=0;i<S.symbols.length;i++){
     if(!RUNNING) return;
     const item = S.symbols[i];
     symbolLookup[item.tradeSymbol.toUpperCase()] = item.display;
     try{
-      S.candles[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, CFG.interval, CANDLE_LIMIT);
-      if(CFG.mtfConfirm) S.htfCandles[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, CFG.mtfInterval, MTF_CANDLE_LIMIT);
+      if(isSmc){
+        S.smcCandles.d1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.d1, SMC_LIMIT.d1);
+        S.smcCandles.h4[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.h4, SMC_LIMIT.h4);
+        S.smcCandles.h1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.h1, SMC_LIMIT.h1);
+        S.smcCandles.m5[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.m5, SMC_LIMIT.m5);
+      }else{
+        S.candles[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, CFG.interval, CANDLE_LIMIT);
+        if(CFG.mtfConfirm) S.htfCandles[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, CFG.mtfInterval, MTF_CANDLE_LIMIT);
+      }
       ok++;
     }catch(e){
       log(`Gagal ambil riwayat ${item.display}: ${e}`, "err");
@@ -1889,12 +2227,16 @@ async function startScan(){
   }
   log(`Riwayat awal siap untuk ${ok}/${S.symbols.length} coin.`, "ok");
 
-  for(const item of S.symbols){
-    if(S.candles[item.tradeSymbol] && S.candles[item.tradeSymbol].length){
-      const candles = S.candles[item.tradeSymbol].map(c=>Object.assign({},c));
-      addIndicators(candles);
-      const result = generateSignal(candles);
-      if(result){ result.symbol = item.display; S.results[item.display] = result; }
+  if(isSmc){
+    for(const item of S.symbols) recomputeSmc(item.tradeSymbol, item.display);
+  }else{
+    for(const item of S.symbols){
+      if(S.candles[item.tradeSymbol] && S.candles[item.tradeSymbol].length){
+        const candles = S.candles[item.tradeSymbol].map(c=>Object.assign({},c));
+        addIndicators(candles);
+        const result = generateSignal(candles);
+        if(result){ result.symbol = item.display; S.results[item.display] = result; }
+      }
     }
   }
   S.baselineDone = true;
@@ -1903,8 +2245,12 @@ async function startScan(){
   const streamNames = [];
   for(const item of S.symbols){
     const low = item.tradeSymbol.toLowerCase();
-    streamNames.push(`${low}@kline_${CFG.interval}`);
-    if(CFG.mtfConfirm) streamNames.push(`${low}@kline_${CFG.mtfInterval}`);
+    if(isSmc){
+      streamNames.push(`${low}@kline_${SMC_TF.d1}`, `${low}@kline_${SMC_TF.h4}`, `${low}@kline_${SMC_TF.h1}`, `${low}@kline_${SMC_TF.m5}`);
+    }else{
+      streamNames.push(`${low}@kline_${CFG.interval}`);
+      if(CFG.mtfConfirm) streamNames.push(`${low}@kline_${CFG.mtfInterval}`);
+    }
   }
   const chunks = chunk(streamNames, STREAMS_PER_CONNECTION);
   chunks.forEach((c, idx) => openWsConnection(idx+1, c, symbolLookup));
@@ -1930,7 +2276,9 @@ function stopScan(){
   document.getElementById("liveDot").classList.remove("live");
   document.getElementById("wsPill").textContent = "WS: OFF";
   document.getElementById("wsPill").className = "status-pill off";
-  document.getElementById("headerSub").textContent = "Analisa RSI + Moving Average (EMA cross) — dihentikan";
+  document.getElementById("headerSub").textContent = STRATEGY_MODE==="SMC"
+    ? "Analisa SMC Multi-TF (D1→H4→H1→M5) — dihentikan"
+    : "Analisa RSI + Moving Average (EMA cross) — dihentikan";
   log("Dihentikan.", "warn");
 }
 
@@ -1943,6 +2291,30 @@ document.getElementById("btnStop").addEventListener("click", stopScan);
 let SCAN_MODE = "ALL";
 let EDIT_MODE = false;
 let COIN_LIST = []; // daftar checklist kosong dari awal, isi manual lewat tombol Tambah
+
+/* ============================================================
+   MENU STRATEGI: RSI+MA (default, tak berubah) vs SMC Multi-TF (baru)
+   ============================================================ */
+let STRATEGY_MODE = "RSIMA";
+function setStrategyMode(mode){
+  STRATEGY_MODE = mode;
+  document.getElementById("tabStratRsiMa").classList.toggle("active", mode==="RSIMA");
+  document.getElementById("tabStratSmc").classList.toggle("active", mode==="SMC");
+  document.getElementById("rsimaFields").style.display = mode==="RSIMA" ? "contents" : "none";
+  document.getElementById("smcFields").style.display = mode==="SMC" ? "block" : "none";
+  const titles = mode==="SMC"
+    ? { buy:"Sinyal BUY (Entry OB M5)", sell:"Sinyal SELL (Entry OB M5)",
+        ongoing:"Menunggu IDM/Liquidity — Bias Searah", analisa:"Analisa (Belum Ada Setup)" }
+    : { buy:"Sinyal BUY", sell:"Sinyal SELL",
+        ongoing:"Sedang Berlangsung — Telat Masuk", analisa:"Analisa (HOLD / Netral)" };
+  document.getElementById("titleBuy").textContent = titles.buy;
+  document.getElementById("titleSell").textContent = titles.sell;
+  document.getElementById("titleOngoing").textContent = titles.ongoing;
+  document.getElementById("titleAnalisa").textContent = titles.analisa;
+  render();
+}
+document.getElementById("tabStratRsiMa").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("RSIMA"); saveSettings(); } });
+document.getElementById("tabStratSmc").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("SMC"); saveSettings(); } });
 
 function getCheckedSet(){
   return new Set(Array.from(document.querySelectorAll("#coinChecklist input[type=checkbox]:checked")).map(cb=>cb.value));
@@ -2051,6 +2423,7 @@ const SETTINGS_KEY = "rsimaScannerSettings_v1";
 function collectSettingsForSave(){
   return {
     scanMode: SCAN_MODE,
+    strategyMode: STRATEGY_MODE,
     coinList: COIN_LIST,
     checkedCoins: Array.from(document.querySelectorAll("#coinChecklist input[type=checkbox]:checked")).map(cb=>cb.value),
     market: document.getElementById("cfgMarket").value,
@@ -2090,6 +2463,7 @@ function loadSettings(){
     });
   }
   if(saved.scanMode === "CUSTOM" || saved.scanMode === "ALL") setScanMode(saved.scanMode);
+  if(saved.strategyMode === "SMC" || saved.strategyMode === "RSIMA") setStrategyMode(saved.strategyMode);
 
   log("Setting sebelumnya berhasil dimuat dari penyimpanan lokal HP ini.", "ok");
 }
