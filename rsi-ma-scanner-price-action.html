@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18.44 - 22/8/2026 (+ mode SMC Multi-TF)</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.02 - 22/8/2026 (+ BSL/SSL & visual BOS/CHoCH/IND di mode SMC)</div>
   </div>
 </header>
 
@@ -1102,10 +1102,19 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
       ? `M5 Liquidity: area SSL (sell-side) di ${fmt(liqM5.ssl.bottom)}-${fmt(liqM5.ssl.top)} sudah DISAPU ${liqM5.ssl.sweptBarsAgo} candle lalu -> likuiditas bawah sudah dimakan.`
       : `M5 Liquidity: area SSL (sell-side) di ${fmt(liqM5.ssl.bottom)}-${fmt(liqM5.ssl.top)} dari ${liqM5.ssl.count} equal low, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
   }
+  // --- Struktur M5 (BOS/CHoCH) & Inducement M5 — dipakai utk visual mini chart eksekusi
+  // (garis step BOS/CHoCH & marker IND, mirip gaya chart SMC pada umumnya)
+  const structM5early = analyzeStructure(candlesM5);
+  const indM5 = detectInducement(candlesM5);
+
   // ikut disertakan di SEMUA return sejak titik ini, biar mini chart & info liquidity tetap tampil
   // walau status masih WAIT/NO_SETUP di langkah manapun (D1/H4/H1/M5)
   const liqExtra = {
     bslZone: liqM5.bsl, sslZone: liqM5.ssl,
+    structM5Trend: structM5early.trend, structM5Event: structM5early.event,
+    structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
+    indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
+    indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
     miniCandles: candlesM5.slice(-30).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 
@@ -1852,11 +1861,16 @@ function renderSmcMiniChart(r, chartKey){
   const showPoi = r.ob && within(r.ob.zoneTop) && within(r.ob.zoneBottom);
   const showTp  = r.takeProfit!==null && r.takeProfit!==undefined && within(r.takeProfit);
   const showSl  = r.stopLoss!==null && r.stopLoss!==undefined && within(r.stopLoss);
+  const showStructHigh = within(r.structM5High);
+  const showStructLow  = within(r.structM5Low);
+  const showInd         = within(r.indM5Level);
 
   const allVals = baseVals.concat(
     showBsl? [r.bslZone.top, r.bslZone.bottom]:[], showSsl? [r.sslZone.top, r.sslZone.bottom]:[],
     showPoi? [r.ob.zoneTop, r.ob.zoneBottom]:[],
-    showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[]
+    showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[],
+    showStructHigh? [r.structM5High]:[], showStructLow? [r.structM5Low]:[],
+    showInd? [r.indM5Level]:[]
   );
   let lo = Math.min(...allVals), hi = Math.max(...allVals);
   const span = (hi-lo) || 1;
@@ -1867,6 +1881,34 @@ function renderSmcMiniChart(r, chartKey){
   const svgParts = [];
   svgParts.push(`<svg viewBox="0 0 ${chartW} ${H}" width="${chartW}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block;">`);
   svgParts.push(`<rect x="0" y="0" width="${chartW}" height="${H}" fill="#0b0e11"/>`);
+
+  // garis struktur BOS/CHoCH (biru) - swing high/low M5, digambar SEBELUM candle
+  if(showStructHigh){
+    const yy=y(r.structM5High);
+    svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
+    const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BULLISH" ? "BOS"
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Buy Side Liquidity";
+    svgParts.push(`<text x="4" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
+  }
+  if(showStructLow){
+    const yy=y(r.structM5Low);
+    svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
+    const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BEARISH" ? "BOS"
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Sell Side Liquidity";
+    svgParts.push(`<text x="4" y="${yy+11}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
+  }
+  // marker inducement (IND) - titik sweep likuiditas minor, ungu titik-titik
+  if(showInd){
+    const yy=y(r.indM5Level);
+    const col = r.indM5Verdict==="REAL" ? "#a371f7" : r.indM5Verdict==="FAKE" ? "#f0b90b" : "#8b949e";
+    svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="${col}" stroke-width="1" stroke-dasharray="1,4"/>`);
+    svgParts.push(`<text x="4" y="${yy+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">IND${r.indM5Verdict?" ("+r.indM5Verdict+")":""}</text>`);
+    if(r.indM5BarsAgo!==null && r.indM5BarsAgo!==undefined && r.indM5BarsAgo < n){
+      const sweepIdx = (n-1) - r.indM5BarsAgo;
+      const cx = sweepIdx*cw + cw/2;
+      svgParts.push(`<circle cx="${cx}" cy="${yy}" r="3.5" fill="none" stroke="${col}" stroke-width="1.2"/>`);
+    }
+  }
 
   // area BSL (buy-side liquidity, kolam equal high)
   if(showBsl){
