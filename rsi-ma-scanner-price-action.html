@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.05 - 22/8/2026 (+ zoom = jumlah candle: kecil=lebih byk history, besar=lebih detail)</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.20 - 22/8/2026 (fix: label POI/Optimal Entry/BSL/dll dipindah ke kanan biar gak kescroll)</div>
   </div>
 </header>
 
@@ -1787,19 +1787,19 @@ function renderMiniZoneChart(r, chartKey){
   if(showStructHigh){
     const yy=y(r.structSwingHigh);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
-    svgParts.push(`<text x="4" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${r.structEvent==="BOS"&&r.structTrend==="BULLISH"?"BOS":r.structEvent==="CHOCH"&&r.structTrend==="BULLISH"?"CHoCH":"struktur H"}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${r.structEvent==="BOS"&&r.structTrend==="BULLISH"?"BOS":r.structEvent==="CHOCH"&&r.structTrend==="BULLISH"?"CHoCH":"struktur H"}</text>`);
   }
   if(showStructLow){
     const yy=y(r.structSwingLow);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
-    svgParts.push(`<text x="4" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${r.structEvent==="BOS"&&r.structTrend==="BEARISH"?"BOS":r.structEvent==="CHOCH"&&r.structTrend==="BEARISH"?"CHoCH":"struktur L"}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${r.structEvent==="BOS"&&r.structTrend==="BEARISH"?"BOS":r.structEvent==="CHOCH"&&r.structTrend==="BEARISH"?"CHoCH":"struktur L"}</text>`);
   }
   // garis level inducement (ungu, titik-titik)
   if(showInd){
     const yy=y(r.indLevel);
     const col = r.indVerdict==="REAL" ? "#a371f7" : r.indVerdict==="FAKE" ? "#f0b90b" : "#8b949e";
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="${col}" stroke-width="1" stroke-dasharray="1,4"/>`);
-    svgParts.push(`<text x="4" y="${yy+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">IDM ${r.indVerdict||""}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">IDM ${r.indVerdict||""}</text>`);
     // tandai candle sweep-nya kalau posisinya masih ada di rentang mini chart yg ditampilkan
     if(r.indBarsAgo!==null && r.indBarsAgo!==undefined && r.indBarsAgo < n){
       const sweepIdx = (n-1) - r.indBarsAgo;
@@ -1815,7 +1815,7 @@ function renderMiniZoneChart(r, chartKey){
     const op  = r.bslZone.swept ? "0.06" : "0.16";
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
     svgParts.push(`<line x1="0" y1="${yTop}" x2="${chartW}" y2="${yTop}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.bslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
-    svgParts.push(`<text x="4" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">BSL${r.bslZone.swept?" (swept)":""} x${r.bslZone.count}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">BSL${r.bslZone.swept?" (swept)":""} x${r.bslZone.count}</text>`);
   }
   // area SSL (sell-side liquidity, kolam equal low) - kotak putih/abu di bawah
   if(showSsl){
@@ -1824,7 +1824,7 @@ function renderMiniZoneChart(r, chartKey){
     const op  = r.sslZone.swept ? "0.06" : "0.16";
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
     svgParts.push(`<line x1="0" y1="${yBot}" x2="${chartW}" y2="${yBot}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.sslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
-    svgParts.push(`<text x="4" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SSL${r.sslZone.swept?" (swept)":""} x${r.sslZone.count}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SSL${r.sslZone.swept?" (swept)":""} x${r.sslZone.count}</text>`);
   }
   // POI (Point of Interest) = zona Order Block; digambar solid kalau masih fresh (blm di-retest), pudar kalau sudah mitigated
   if(showPoi){
@@ -1833,11 +1833,11 @@ function renderMiniZoneChart(r, chartKey){
     const op  = r.poi.mitigated ? "0.08" : "0.22";
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" stroke-dasharray="${r.poi.mitigated?"2,3":"none"}" opacity="0.85"/>`);
-    svgParts.push(`<text x="4" y="${yTop+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">POI (OB ${r.poi.direction})${r.poi.mitigated?" - mitigated":""}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">POI (OB ${r.poi.direction})${r.poi.mitigated?" - mitigated":""}</text>`);
     // garis Optimal Entry Position (50% body OB) di tengah zona
     const yOpt = y(r.poi.optimalEntry);
     svgParts.push(`<line x1="0" y1="${yOpt}" x2="${chartW}" y2="${yOpt}" stroke="${col}" stroke-width="1" stroke-dasharray="1,3" opacity="0.9"/>`);
-    svgParts.push(`<text x="4" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
   }
 
   // Proyeksi Target (TP) & Stop (SL) dari entry, dgn rasio risk/reward - mirip kotak biru/merah di tool trading
@@ -1849,13 +1849,13 @@ function renderMiniZoneChart(r, chartKey){
       const yTp = y(r.takeProfit);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
-      svgParts.push(`<text x="4" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
     }
     if(showSl){
       const ySl = y(r.stopLoss);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
-      svgParts.push(`<text x="4" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
     }
   }
 
@@ -1979,21 +1979,21 @@ function renderSmcMiniChart(r, chartKey){
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BULLISH" ? "BOS"
       : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Buy Side Liquidity";
-    svgParts.push(`<text x="4" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   if(showStructLow){
     const yy=y(r.structM5Low);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BEARISH" ? "BOS"
       : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Sell Side Liquidity";
-    svgParts.push(`<text x="4" y="${yy+11}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   // marker inducement (IND) - titik sweep likuiditas minor, ungu titik-titik
   if(showInd){
     const yy=y(r.indM5Level);
     const col = r.indM5Verdict==="REAL" ? "#a371f7" : r.indM5Verdict==="FAKE" ? "#f0b90b" : "#8b949e";
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="${col}" stroke-width="1" stroke-dasharray="1,4"/>`);
-    svgParts.push(`<text x="4" y="${yy+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">IND${r.indM5Verdict?" ("+r.indM5Verdict+")":""}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">IND${r.indM5Verdict?" ("+r.indM5Verdict+")":""}</text>`);
     if(r.indM5BarsAgo!==null && r.indM5BarsAgo!==undefined && r.indM5BarsAgo < n){
       const sweepIdx = (n-1) - r.indM5BarsAgo;
       const cx = sweepIdx*cw + cw/2;
@@ -2008,7 +2008,7 @@ function renderSmcMiniChart(r, chartKey){
     const op  = r.bslZone.swept ? "0.06" : "0.16";
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
     svgParts.push(`<line x1="0" y1="${yTop}" x2="${chartW}" y2="${yTop}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.bslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
-    svgParts.push(`<text x="4" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">BSL${r.bslZone.swept?" (swept)":""} x${r.bslZone.count}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">BSL${r.bslZone.swept?" (swept)":""} x${r.bslZone.count}</text>`);
   }
   // area SSL (sell-side liquidity, kolam equal low)
   if(showSsl){
@@ -2017,7 +2017,7 @@ function renderSmcMiniChart(r, chartKey){
     const op  = r.sslZone.swept ? "0.06" : "0.16";
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
     svgParts.push(`<line x1="0" y1="${yBot}" x2="${chartW}" y2="${yBot}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.sslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
-    svgParts.push(`<text x="4" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SSL${r.sslZone.swept?" (swept)":""} x${r.sslZone.count}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SSL${r.sslZone.swept?" (swept)":""} x${r.sslZone.count}</text>`);
   }
   // POI = zona Order Block M5
   if(showPoi){
@@ -2026,10 +2026,10 @@ function renderSmcMiniChart(r, chartKey){
     const op  = r.ob.mitigated ? "0.08" : "0.22";
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" stroke-dasharray="${r.ob.mitigated?"2,3":"none"}" opacity="0.85"/>`);
-    svgParts.push(`<text x="4" y="${yTop+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">POI (OB ${r.ob.direction})${r.ob.mitigated?" - mitigated":""}</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">POI (OB ${r.ob.direction})${r.ob.mitigated?" - mitigated":""}</text>`);
     const yOpt = y(r.ob.optimalEntry);
     svgParts.push(`<line x1="0" y1="${yOpt}" x2="${chartW}" y2="${yOpt}" stroke="${col}" stroke-width="1" stroke-dasharray="1,3" opacity="0.9"/>`);
-    svgParts.push(`<text x="4" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
   }
   // Target (TP) & Stop (SL)
   if(showTp || showSl){
@@ -2040,13 +2040,13 @@ function renderSmcMiniChart(r, chartKey){
       const yTp = y(r.takeProfit);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
-      svgParts.push(`<text x="4" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
     }
     if(showSl){
       const ySl = y(r.stopLoss);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
-      svgParts.push(`<text x="4" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
     }
   }
 
