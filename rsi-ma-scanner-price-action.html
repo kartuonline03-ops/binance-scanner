@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.45 - 22/8/2026 (+ zoom mini chart: tombol -/+ & pinch 2 jari)</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.05 - 22/8/2026 (+ zoom = jumlah candle: kecil=lebih byk history, besar=lebih detail)</div>
   </div>
 </header>
 
@@ -1116,7 +1116,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
     indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
-    miniCandles: candlesM5.slice(-30).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
+    miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 
   // --- Langkah 1: bias D1 ---
@@ -1453,7 +1453,7 @@ function generateSignal(candles){
     indBarsAgo: ind ? ind.barsAgo : null,
     bslZone: liq.bsl, sslZone: liq.ssl,
     poi: ob,
-    miniCandles: candles.slice(-30).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
+    miniCandles: candles.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 }
 
@@ -1661,12 +1661,14 @@ function crossBadge(event){
    memperbesar/memperkecil candle di mini chart, dipakai bareng
    sama renderMiniZoneChart (RSI+MA) & renderSmcMiniChart (SMC).
    ============================================================ */
-const CHART_ZOOM_MIN = 0.6, CHART_ZOOM_MAX = 2.4, CHART_ZOOM_STEP = 0.3;
+const CHART_ZOOM_MIN = 0.35, CHART_ZOOM_MAX = 2.4, CHART_ZOOM_STEP = 0.3;
+const CHART_BASE_VISIBLE_CANDLES = 30; // jumlah candle yg tampil pas zoom 100%
 
 function buildChartZoomControls(chartKey){
   const zoom = S.chartZoom[chartKey] || 1;
+  const visibleN = Math.max(8, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom));
   const bar = document.createElement("div");
-  bar.style.cssText = "display:flex; justify-content:flex-end; gap:4px; margin-top:6px;";
+  bar.style.cssText = "display:flex; justify-content:flex-end; align-items:center; gap:4px; margin-top:6px;";
 
   const mkBtn = (label, title, onClick)=>{
     const b = document.createElement("button");
@@ -1679,20 +1681,24 @@ function buildChartZoomControls(chartKey){
     return b;
   };
 
-  bar.appendChild(mkBtn("−", "Perkecil chart", ()=>{
+  bar.appendChild(mkBtn("−", "Kecilkan candle -> tampilkan lebih banyak history", ()=>{
     const cur = S.chartZoom[chartKey] || 1;
     S.chartZoom[chartKey] = Math.max(CHART_ZOOM_MIN, +(cur - CHART_ZOOM_STEP).toFixed(2));
     delete S.chartScroll[chartKey];
     render();
   }));
-  bar.appendChild(mkBtn(`${Math.round(zoom*100)}%`, "Reset zoom ke 100%", ()=>{
-    S.chartZoom[chartKey] = 1;
+  const countLabel = document.createElement("span");
+  countLabel.textContent = `${visibleN} candle`;
+  countLabel.style.cssText = "font-family:var(--mono); font-size:10px; color:#8b949e; padding:0 2px;";
+  bar.appendChild(countLabel);
+  bar.appendChild(mkBtn("+", "Besarkan candle -> tampilkan lebih sedikit, lebih detail", ()=>{
+    const cur = S.chartZoom[chartKey] || 1;
+    S.chartZoom[chartKey] = Math.min(CHART_ZOOM_MAX, +(cur + CHART_ZOOM_STEP).toFixed(2));
     delete S.chartScroll[chartKey];
     render();
   }));
-  bar.appendChild(mkBtn("+", "Perbesar chart", ()=>{
-    const cur = S.chartZoom[chartKey] || 1;
-    S.chartZoom[chartKey] = Math.min(CHART_ZOOM_MAX, +(cur + CHART_ZOOM_STEP).toFixed(2));
+  bar.appendChild(mkBtn("⟲", "Reset ke tampilan default", ()=>{
+    S.chartZoom[chartKey] = 1;
     delete S.chartScroll[chartKey];
     render();
   }));
@@ -1725,11 +1731,16 @@ function attachPinchZoom(scrollArea, chartKey){
 }
 
 function renderMiniZoneChart(r, chartKey){
-  const candles = r.miniCandles;
-  if(!candles || candles.length<5 || r.paSwingHigh==null || r.paSwingLow==null) return null;
+  const allCandles = r.miniCandles;
+  if(!allCandles || allCandles.length<5 || r.paSwingHigh==null || r.paSwingLow==null) return null;
 
   const zoom = S.chartZoom[chartKey] || 1;
-  const H=Math.round(130*zoom), padT=8, padB=8;
+  // zoom ngatur JUMLAH candle yg tampil: zoom < 1 (dikecilkan) -> lebih banyak history candle masuk;
+  // zoom > 1 (diperbesar) -> lebih sedikit candle tapi lebih detail/lebar per candle.
+  const visibleN = Math.max(8, Math.min(allCandles.length, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom)));
+  const candles = allCandles.slice(-visibleN);
+
+  const H=130, padT=8, padB=8;
   const CANDLE_W = 14*zoom;               // lebar per candle (px) -> menentukan total lebar chart yg bisa digeser
   const n = candles.length;
   const chartW = Math.max(n*CANDLE_W, 220);
@@ -1917,11 +1928,16 @@ function renderMiniZoneChart(r, chartKey){
    Fokus: candle M5 + area BSL/SSL + zona Order Block (POI) + TP/SL.
    ============================================================ */
 function renderSmcMiniChart(r, chartKey){
-  const candles = r.miniCandles;
-  if(!candles || candles.length<5) return null;
+  const allCandles = r.miniCandles;
+  if(!allCandles || allCandles.length<5) return null;
 
   const zoom = S.chartZoom[chartKey] || 1;
-  const H=Math.round(130*zoom), padT=8, padB=8;
+  // zoom ngatur JUMLAH candle yg tampil: zoom < 1 (dikecilkan) -> lebih banyak history candle masuk;
+  // zoom > 1 (diperbesar) -> lebih sedikit candle tapi lebih detail/lebar per candle.
+  const visibleN = Math.max(8, Math.min(allCandles.length, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom)));
+  const candles = allCandles.slice(-visibleN);
+
+  const H=130, padT=8, padB=8;
   const CANDLE_W = 14*zoom;
   const n = candles.length;
   const chartW = Math.max(n*CANDLE_W, 220);
