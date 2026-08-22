@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Binance RSI+MA Signal Scanner — Web</title>
+<title>Binance SMC + SND Signal Scanner — Web</title>
 <style>
   :root{
     --bg:#0b0e11; --panel:#12161c; --panel2:#171c24; --border:#232833;
@@ -222,13 +222,13 @@
   <div class="brand">
     <span class="dot" id="liveDot"></span>
     <div>
-      <h1>Binance RSI+MA Signal Scanner</h1>
-      <div class="sub" id="headerSub">Analisa RSI + Moving Average (EMA cross) — belum jalan</div>
+      <h1>Binance Signal Scanner</h1>
+      <div class="sub" id="headerSub">Pilih strategi (SMC / SND) lalu mulai scan — belum jalan</div>
     </div>
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.20 - 22/8/2026 (fix: label POI/Optimal Entry/BSL/dll dipindah ke kanan biar gak kescroll)</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 22.30 - 22/8/2026</div>
   </div>
 </header>
 
@@ -237,7 +237,7 @@
     <h2>Konfigurasi</h2>
     <div class="cfg-grid">
       <div class="strategy-tabs">
-        <div class="strategy-tab active" id="tabStratRsiMa" data-strat="RSIMA">📈 RSI+MA</div>
+        <div class="strategy-tab active" id="tabStratSnd" data-strat="SND">📊 SND (Supply/Demand)</div>
         <div class="strategy-tab" id="tabStratSmc" data-strat="SMC">🎯 SMC Multi-TF</div>
       </div>
       <div class="field">
@@ -247,31 +247,18 @@
           <option value="SPOT">SPOT</option>
         </select>
       </div>
-      <div id="rsimaFields" style="display:contents;">
+      <div id="sndFields" style="display:contents;">
         <div class="field">
-          <label>Timeframe utama</label>
-          <select id="cfgInterval">
-            <option value="1m">1m</option>
-            <option value="5m" selected>5m</option>
-            <option value="15m">15m</option>
-            <option value="1h">1h</option>
-            <option value="4h">4h</option>
+          <label>Konfirmasi entry (M5/M1)</label>
+          <select id="cfgSndEntryMode">
+            <option value="CASCADE" selected>Cascade (M5 dulu, blm confirm turun ke M1)</option>
+            <option value="DUAL">Dual (M5 DAN M1 harus confirm bareng)</option>
           </select>
         </div>
-        <div class="field">
-          <label>Konfirmasi MTF</label>
-          <select id="cfgMtfConfirm">
-            <option value="1" selected>Aktif</option>
-            <option value="0">Nonaktif</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>Timeframe MTF</label>
-          <select id="cfgMtfInterval">
-            <option value="15m">15m</option>
-            <option value="1h" selected>1h</option>
-            <option value="4h">4h</option>
-          </select>
+        <div class="cfg-note" style="margin:0; grid-column:1 / -1;">
+          Mode SND pakai timeframe TETAP alur top-down: <b>D1</b> (bias) → <b>H4</b> (arah menengah) →
+          <b>H1</b> (identifikasi zona Supply/Demand — base candle + titik asal swing struktur, fresh only) →
+          <b>M5/M1</b> (tunggu candle reversal closed di zona utk entry).
         </div>
       </div>
       <div id="smcFields" style="display:none; grid-column:1 / -1;">
@@ -355,9 +342,9 @@
 </main>
 
 <footer>
-  DISCLAIMER: Ini BUKAN nasihat keuangan. Sinyal murni dari analisa RSI + Moving Average (EMA cross).
-  Selalu riset mandiri (DYOR) &amp; kelola risiko sebelum trading. Data publik dari Binance, tidak ada API key/kredensial
-  yang dipakai atau dikirim.
+  DISCLAIMER: Ini BUKAN nasihat keuangan. Sinyal murni dari analisa struktur pasar (SMC Multi-TF) & zona
+  Supply/Demand (SND). Selalu riset mandiri (DYOR) &amp; kelola risiko sebelum trading. Data publik dari Binance,
+  tidak ada API key/kredensial yang dipakai atau dikirim.
 </footer>
 
 <script>
@@ -365,19 +352,9 @@
 "use strict";
 
 /* ============================================================
-   KONSTANTA STRATEGI — RSI + Moving Average (EMA cross)
+   KONSTANTA UMUM
    ============================================================ */
-const CANDLE_LIMIT = 200;
-const MTF_CANDLE_LIMIT = 60;
-const ATR_PERIOD = 14;         // dipakai utk hitung jarak TP/SL saja (risk sizing)
-const ATR_SL_MULT = 1.5;
-const ATR_TP_MULT = 3.0;
-const MA_FAST_PERIOD = 10;     // EMA cepat
-const MA_SLOW_PERIOD = 50;     // EMA lambat
-const RSI_PERIOD = 14;
-const RSI_OVERBOUGHT = 70;
-const RSI_OVERSOLD = 30;
-const ONGOING_LATE_BARS = 8;   // brp candle sejak cross terakhir baru dianggap "telat masuk"
+const ATR_PERIOD = 14;         // dipakai utk hitung jarak TP/SL (risk sizing)
 const EXCLUDE_KEYWORDS = ["USDT","USDC","BUSD","TUSD","FDUSD","DAI","EUR","GBP","TRY","UPUSDT","DOWNUSDT","BULLUSDT","BEARUSDT"];
 
 const STREAMS_PER_CONNECTION = 60;
@@ -388,7 +365,7 @@ const WATCHDOG_GRACE_MS = 15000;
 const POLL_FALLBACK_STRIKES = 3;   // berapa kali WS gagal total (0 data) berturut-turut sebelum beralih ke polling REST
 const POLL_INTERVAL_MS = 4000;     // jeda antar batch polling REST
 const POLL_BATCH_SIZE = 3;         // berapa symbol di-poll per tick
-const POLL_MTF_EVERY_TICKS = 20;   // update candle MTF tiap N tick polling (lebih jarang, tidak kritis realtime)
+const POLL_MTF_EVERY_TICKS = 20;   // update candle D1/H4/H1 tiap N tick polling (lebih jarang, tidak kritis realtime)
 const INITIAL_FETCH_DELAY_MS = 200;
 
 /* ============================================================
@@ -402,6 +379,23 @@ const SMC_TRIGGER_TF = "m5";       // TF yg jadi trigger WS realtime utama
 const SMC_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar Order Block, dlm satuan ATR M5 (kecil, sesuai gaya "SL kecil")
 
 /* ============================================================
+   MODE SND (SUPPLY & DEMAND) — timeframe TETAP, top-down juga:
+   D1 (bias) -> H4 (arah menengah) -> H1 (identifikasi zona S/D:
+   base candle + titik asal swing struktur, fresh only) -> M5/M1
+   (tunggu candle reversal CLOSED di zona utk entry — Cascade/Dual)
+   ============================================================ */
+const SND_TF = { d1:"1d", h4:"4h", h1:"1h", m5:"5m", m1:"1m" };
+const SND_LIMIT = { d1:120, h4:150, h1:200, m5:200, m1:200 };
+const SND_TRIGGER_TF = "m1";        // TF paling halus -> sumber harga live & trigger realtime utama
+const SND_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar zona S/D, dlm satuan ATR M5
+const SND_ATR_TP_MULT = 3.0;         // fallback TP (kalau blm ada zona lawan yg relevan), dlm satuan ATR M5
+const SND_BASE_MAX = 3;              // maks candle dlm base/konsolidasi
+const SND_BASE_BODY_RATIO_MAX = 0.5; // body ratio maks candle utk dianggap bagian dari base (bukan candle impulsif)
+const SND_IMPULSE_BODY_RATIO_MIN = 0.5; // body ratio min candle "ninggalin base" (leg impulsif)
+const SND_SWING_STRENGTH = 2;        // brp candle kiri&kanan utk jadi swing point (titik asal zona)
+const SND_SWING_LOOKBACK = 80;       // rentang candle H1 yg dipindai cari zona
+
+/* ============================================================
    STATE
    ============================================================ */
 let CFG = null;
@@ -410,9 +404,6 @@ let watchdogTimer = null;
 let redrawTimer = null;
 const S = {
   symbols: [],                 // [{tradeSymbol, display}]
-  candles: {},                 // tradeSymbol -> [candle]
-  htfCandles: {},               // tradeSymbol -> [candle]
-  results: {},                  // display -> result
   livePrice: {},                 // display -> harga live (belum tentu candle closed)
   sockets: [],                  // active WebSocket objects
   connectStart: {},             // connId -> epoch ms
@@ -426,6 +417,9 @@ const S = {
   // --- state khusus mode SMC Multi-TF ---
   smcCandles: { d1:{}, h4:{}, h1:{}, m5:{} },  // tf -> tradeSymbol -> [candle]
   smcResults: {},                              // display -> hasil analisa SMC
+  // --- state khusus mode SND (Supply & Demand) ---
+  sndCandles: { d1:{}, h4:{}, h1:{}, m5:{}, m1:{} },  // tf -> tradeSymbol -> [candle]
+  sndResults: {},                                     // display -> hasil analisa SND
 };
 
 /* ============================================================
@@ -538,36 +532,6 @@ function mergeCandleRow(list, row, maxLen){
   }
 }
 
-async function pollSymbolOnce(item){
-  const tradeSymbol = item.tradeSymbol, display = item.display;
-  try{
-    const rows = await fetchHistory(tradeSymbol, CFG.interval, 2);
-    if(rows.length){
-      const list = S.candles[tradeSymbol] || (S.candles[tradeSymbol]=[]);
-      rows.forEach(r=>mergeCandleRow(list, r, CANDLE_LIMIT));
-      S.livePrice[display] = rows[rows.length-1].close;
-      recomputeSignal(tradeSymbol, display);
-      noteMessage();
-    }
-  }catch(e){
-    log(`Polling gagal untuk ${display}: ${e}`, "err");
-  }
-}
-
-async function pollMtfOnce(item){
-  if(!CFG.mtfConfirm) return;
-  const tradeSymbol = item.tradeSymbol;
-  try{
-    const rows = await fetchHistory(tradeSymbol, CFG.mtfInterval, 2);
-    if(rows.length){
-      const list = S.htfCandles[tradeSymbol] || (S.htfCandles[tradeSymbol]=[]);
-      rows.forEach(r=>mergeCandleRow(list, r, MTF_CANDLE_LIMIT));
-    }
-  }catch(e){ /* diamkan, tidak kritis */ }
-}
-
-// Polling fallback khusus mode SMC: update M5 tiap tick (trigger utama),
-// D1/H4/H1 lebih jarang (tidak sekritis M5 utk realtime).
 async function pollSmcSymbolOnce(item, doHtf){
   const tradeSymbol = item.tradeSymbol, display = item.display;
   try{
@@ -593,6 +557,38 @@ async function pollSmcSymbolOnce(item, doHtf){
   }
 }
 
+// Polling fallback khusus mode SND: update M1 tiap tick (trigger utama & sumber harga live),
+// M5 agak lebih jarang, D1/H4/H1 paling jarang (tidak sekritis buat realtime).
+async function pollSndSymbolOnce(item, doHtf){
+  const tradeSymbol = item.tradeSymbol, display = item.display;
+  try{
+    const rowsM1 = await fetchHistory(tradeSymbol, SND_TF.m1, 2);
+    if(rowsM1.length){
+      const list = S.sndCandles.m1[tradeSymbol] || (S.sndCandles.m1[tradeSymbol]=[]);
+      rowsM1.forEach(r=>mergeCandleRow(list, r, SND_LIMIT.m1));
+      S.livePrice[display] = rowsM1[rowsM1.length-1].close;
+      noteMessage();
+    }
+    const rowsM5 = await fetchHistory(tradeSymbol, SND_TF.m5, 2);
+    if(rowsM5.length){
+      const list = S.sndCandles.m5[tradeSymbol] || (S.sndCandles.m5[tradeSymbol]=[]);
+      rowsM5.forEach(r=>mergeCandleRow(list, r, SND_LIMIT.m5));
+    }
+    if(doHtf){
+      for(const tf of ["h1","h4","d1"]){
+        const rows = await fetchHistory(tradeSymbol, SND_TF[tf], 2);
+        if(rows.length){
+          const list = S.sndCandles[tf][tradeSymbol] || (S.sndCandles[tf][tradeSymbol]=[]);
+          rows.forEach(r=>mergeCandleRow(list, r, SND_LIMIT[tf]));
+        }
+      }
+    }
+    recomputeSnd(tradeSymbol, display);
+  }catch(e){
+    log(`Polling SND gagal untuk ${display}: ${e}`, "err");
+  }
+}
+
 function startPolling(){
   if(pollTimer) return;
   pollIndex = 0; pollTickCount = 0;
@@ -601,22 +597,12 @@ function startPolling(){
     const n = S.symbols.length;
     if(!n) return;
     pollTickCount++;
-    if(STRATEGY_MODE==="SMC"){
-      const doHtf = pollTickCount % POLL_MTF_EVERY_TICKS === 0;
-      for(let i=0;i<POLL_BATCH_SIZE && i<n;i++){
-        const item = S.symbols[pollIndex % n];
-        pollIndex++;
-        await pollSmcSymbolOnce(item, doHtf);
-      }
-      render();
-      return;
-    }
-    const doMtf = CFG.mtfConfirm && (pollTickCount % POLL_MTF_EVERY_TICKS === 0);
+    const doHtf = pollTickCount % POLL_MTF_EVERY_TICKS === 0;
     for(let i=0;i<POLL_BATCH_SIZE && i<n;i++){
       const item = S.symbols[pollIndex % n];
       pollIndex++;
-      await pollSymbolOnce(item);
-      if(doMtf) await pollMtfOnce(item);
+      if(STRATEGY_MODE==="SMC") await pollSmcSymbolOnce(item, doHtf);
+      else await pollSndSymbolOnce(item, doHtf);
     }
     render();
   }, POLL_INTERVAL_MS);
@@ -635,20 +621,15 @@ function switchToPollingFallback(){
   const pill = document.getElementById("wsPill");
   pill.textContent = "MODE: POLLING";
   pill.className = "status-pill poll";
-  document.getElementById("headerSub").textContent = `Market: ${CFG.market} | Timeframe: ${CFG.interval}${CFG.mtfConfirm ? " | MTF: "+CFG.mtfInterval : ""} | fallback polling REST aktif`;
+  document.getElementById("headerSub").textContent = STRATEGY_MODE==="SMC"
+    ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5 | fallback polling REST aktif`
+    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | D1→H4→H1→M5/M1 | fallback polling REST aktif`;
   startPolling();
 }
 
 /* ============================================================
    INDIKATOR (mirror calc_ema / calc_atr / rolling_avg)
    ============================================================ */
-function calcEma(values, period){
-  if(!values.length) return [];
-  const alpha = 2/(period+1);
-  const out = [values[0]];
-  for(let i=1;i<values.length;i++) out.push(alpha*values[i] + (1-alpha)*out[i-1]);
-  return out;
-}
 function calcAtr(candles, period){
   const n = candles.length;
   const atr = new Array(n).fill(null);
@@ -664,38 +645,6 @@ function calcAtr(candles, period){
   atr[period] = sum/period;
   for(let i=period+1;i<n;i++) atr[i] = (atr[i-1]*(period-1) + tr[i]) / period;
   return atr;
-}
-function rollingAvg(values, period){
-  const n=values.length; const out=new Array(n).fill(null);
-  for(let i=period-1;i<n;i++){
-    let s=0; for(let j=i-period+1;j<=i;j++) s+=values[j];
-    out[i]=s/period;
-  }
-  return out;
-}
-
-/* ============================================================
-   RSI (Relative Strength Index) — mirror standar Wilder smoothing
-   ============================================================ */
-function calcRsi(closes, period){
-  const n = closes.length;
-  const rsi = new Array(n).fill(null);
-  if(n <= period) return rsi;
-  let gainSum=0, lossSum=0;
-  for(let i=1;i<=period;i++){
-    const diff = closes[i]-closes[i-1];
-    if(diff>=0) gainSum+=diff; else lossSum+=(-diff);
-  }
-  let avgGain = gainSum/period, avgLoss = lossSum/period;
-  rsi[period] = avgLoss===0 ? 100 : 100 - (100/(1+avgGain/avgLoss));
-  for(let i=period+1;i<n;i++){
-    const diff = closes[i]-closes[i-1];
-    const gain = diff>0 ? diff : 0, loss = diff<0 ? -diff : 0;
-    avgGain = (avgGain*(period-1)+gain)/period;
-    avgLoss = (avgLoss*(period-1)+loss)/period;
-    rsi[i] = avgLoss===0 ? 100 : 100 - (100/(1+avgGain/avgLoss));
-  }
-  return rsi;
 }
 
 /* ============================================================
@@ -1091,7 +1040,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   }
 
   // --- Liquidity M5: area BSL (buy-side, equal high) & SSL (sell-side, equal low) ---
-  // dipakai sbg konteks target/tarikan likuiditas di TF entry (M5), sama konsepnya spt di mode RSI+MA
+  // dipakai sbg konteks target/tarikan likuiditas di TF entry (M5)
   const liqM5 = detectLiquidityZones(candlesM5);
   if(liqM5.bsl){
     reasons.push(liqM5.bsl.swept
@@ -1225,236 +1174,192 @@ function recomputeSmc(tradeSymbol, display){
 }
 
 /* ============================================================
-   INDIKATOR TAMBAHAN + SINYAL UTAMA — RSI + Moving Average (EMA cross)
+   MODE SND — ZONA SUPPLY & DEMAND (kriteria KOMBINASI):
+   base candle (1-3 candle konsolidasi, body kecil) YANG JUGA jadi
+   titik asal swing high/low struktur (bukan konsolidasi acak di
+   tengah trend). Zona valid hanya kalau masih FRESH (belum pernah
+   ditembus candle full-body sejak terbentuk).
    ============================================================ */
-function addIndicators(candles){
-  const closes = candles.map(c=>c.close);
-  const volumes = candles.map(c=>c.volume);
-  const volAvg20 = rollingAvg(volumes, 20);
-  const atr14 = calcAtr(candles, ATR_PERIOD);
-  const maFast = calcEma(closes, MA_FAST_PERIOD);
-  const maSlow = calcEma(closes, MA_SLOW_PERIOD);
-  const rsi14 = calcRsi(closes, RSI_PERIOD);
-  candles.forEach((c,i)=>{
-    c.volAvg20=volAvg20[i]; c.atr14=atr14[i];
-    c.maFast=maFast[i]; c.maSlow=maSlow[i]; c.rsi=rsi14[i];
-  });
-  return candles;
+function detectSupplyDemandZones(candles){
+  const n = candles.length;
+  if(n < SND_SWING_LOOKBACK) return { demand:null, supply:null };
+  const zz = reduceZigzag(findSwingPoints(candles, SND_SWING_STRENGTH, SND_SWING_LOOKBACK));
+
+  let demand=null, supply=null;
+  for(let p=zz.length-1; p>=0; p--){
+    const pt = zz[p];
+    if((pt.type==="L" && demand) || (pt.type==="H" && supply)) continue;
+
+    // kumpulin base: candle2 body kecil yg overlap, berakhir TEPAT di index titik pivot ini
+    let baseStart = pt.i;
+    const pivotInfo = candleBodyInfo(candles[pt.i]);
+    if(pivotInfo.bodyRatio > SND_BASE_BODY_RATIO_MAX) continue; // candle pivot sendiri hrs "kecil" (bagian base)
+    for(let k=pt.i-1; k>=Math.max(0, pt.i-SND_BASE_MAX+1); k--){
+      const info = candleBodyInfo(candles[k]);
+      if(info.bodyRatio <= SND_BASE_BODY_RATIO_MAX) baseStart = k; else break;
+    }
+    const baseCandles = candles.slice(baseStart, pt.i+1);
+    const top = Math.max(...baseCandles.map(c=>c.high));
+    const bottom = Math.min(...baseCandles.map(c=>c.low));
+
+    // hrs ada leg impulsif yg NINGGALIN base ini ke arah yg sesuai (dlm beberapa candle setelah pivot)
+    let leftImpulsively = false;
+    const checkEnd = Math.min(n-1, pt.i+5);
+    for(let j=pt.i+1; j<=checkEnd; j++){
+      const ji = candleBodyInfo(candles[j]);
+      if(ji.bodyRatio < SND_IMPULSE_BODY_RATIO_MIN) continue;
+      if(pt.type==="L" && ji.bullish && candles[j].close > top){ leftImpulsively=true; break; }
+      if(pt.type==="H" && !ji.bullish && candles[j].close < bottom){ leftImpulsively=true; break; }
+    }
+    if(!leftImpulsively) continue;
+
+    // fresh check: blm ada candle SETELAH base yg body-nya (bukan cuma wick) nembus/masuk ke zona
+    let fresh = true, touchedBarsAgo = null;
+    for(let j=pt.i+1; j<n; j++){
+      const c = candles[j];
+      const bodyLo = Math.min(c.open,c.close), bodyHi = Math.max(c.open,c.close);
+      if(bodyHi >= bottom && bodyLo <= top){ fresh=false; touchedBarsAgo=(n-1-j); }
+    }
+    if(!fresh) continue; // udah gak fresh -> cari titik pivot lain yg lebih lama tp masih fresh
+
+    const zone = { type: pt.type==="L" ? "DEMAND" : "SUPPLY", top, bottom,
+      formedIdx: pt.i, baseCandleCount: baseCandles.length, fresh, touchedBarsAgo };
+    if(pt.type==="L") demand = zone; else supply = zone;
+    if(demand && supply) break;
+  }
+  return { demand, supply };
 }
 
-function generateSignal(candles){
-  if(candles.length < MA_SLOW_PERIOD+5) return null;
-  const n = candles.length;
-  const last = candles[n-1];
-  const prev = candles[n-2];
-  if(last.atr14===null || last.atr14===undefined) return null;
-  if(last.maFast===null || last.maSlow===null || last.rsi===null) return null;
+// Cek apakah candle TF ini (M5/M1) sudah masuk ke zona & candle TERAKHIR yg sudah CLOSE
+// nunjukin pola reversal (engulfing/hammer/shooting star) searah mainDir.
+function checkZoneReversalConfirm(candlesTf, zone, mainDir){
+  if(!candlesTf || candlesTf.length<3 || !zone) return { confirmed:false, touchedZone:false };
+  const last = candlesTf[candlesTf.length-1];
+  const touchedZone = last.low <= zone.top && last.high >= zone.bottom;
+  if(!touchedZone) return { confirmed:false, touchedZone:false };
+  const pattern = detectReversalPattern(candlesTf);
+  const confirmed = !!(pattern && pattern.direction===mainDir);
+  return { confirmed, touchedZone:true, pattern: pattern?pattern.type:null, entryCandle:last };
+}
 
-  let score = 0;
+function biasLabelSnd(trend){ return biasLabel(trend); }
+
+/* ============================================================
+   ANALISA SETUP SND — alur top-down: D1 (bias) -> H4 (arah) ->
+   H1 (identifikasi zona S/D fresh) -> M5/M1 (entry via candle
+   reversal closed di zona). entryMode: "CASCADE" atau "DUAL".
+   ============================================================ */
+function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, entryMode){
   const reasons = [];
+  const empty = { status:"NO_SETUP", direction:null, reasons };
 
-  const volConfirmed = (last.volAvg20!==null && last.volAvg20!==undefined) && (last.volume > last.volAvg20);
-  if(volConfirmed) reasons.push("Volume di atas rata-rata 20 candle (konfirmasi)");
-
-  // --- Tren dari posisi MA cepat vs MA lambat ---
-  const trendUp = last.maFast > last.maSlow;
-  const trendDown = last.maFast < last.maSlow;
-  if(trendUp){ score+=1; reasons.push(`MA${MA_FAST_PERIOD}(${fmt(last.maFast,4)}) di atas MA${MA_SLOW_PERIOD}(${fmt(last.maSlow,4)}) -> tren naik`); }
-  else if(trendDown){ score-=1; reasons.push(`MA${MA_FAST_PERIOD}(${fmt(last.maFast,4)}) di bawah MA${MA_SLOW_PERIOD}(${fmt(last.maSlow,4)}) -> tren turun`); }
-
-  // --- Golden Cross / Death Cross (MA cepat baru memotong MA lambat) ---
-  let crossEvent = null;
-  const wasFastBelow = prev.maFast!==null && prev.maSlow!==null && prev.maFast<=prev.maSlow;
-  const wasFastAbove = prev.maFast!==null && prev.maSlow!==null && prev.maFast>=prev.maSlow;
-  if(wasFastBelow && trendUp){
-    crossEvent = "GOLDEN_CROSS"; score+=2;
-    reasons.push(`Golden Cross: MA${MA_FAST_PERIOD} baru memotong ke ATAS MA${MA_SLOW_PERIOD}`);
-  }else if(wasFastAbove && trendDown){
-    crossEvent = "DEATH_CROSS"; score-=2;
-    reasons.push(`Death Cross: MA${MA_FAST_PERIOD} baru memotong ke BAWAH MA${MA_SLOW_PERIOD}`);
+  if(!candlesD1 || !candlesH4 || !candlesH1 || !candlesM5 || !candlesM1) return empty;
+  if(candlesD1.length < STRUCT_LOOKBACK || candlesH4.length < STRUCT_LOOKBACK ||
+     candlesH1.length < Math.max(STRUCT_LOOKBACK, SND_SWING_LOOKBACK) ||
+     candlesM5.length < 5 || candlesM1.length < 5){
+    reasons.push("Data candle salah satu timeframe (D1/H4/H1/M5/M1) belum cukup untuk analisa struktur.");
+    return empty;
   }
 
-  // --- RSI ---
-  const rsi = last.rsi;
-  const prevRsi = prev.rsi;
-  if(rsi < RSI_OVERSOLD){
-    reasons.push(`RSI(${RSI_PERIOD})=${fmt(rsi,1)} -> oversold (<${RSI_OVERSOLD})`);
-    if(prevRsi!==null && rsi > prevRsi){ score+=1; reasons.push("RSI oversold mulai naik lagi (potensi rebound)"); }
-  }else if(rsi > RSI_OVERBOUGHT){
-    reasons.push(`RSI(${RSI_PERIOD})=${fmt(rsi,1)} -> overbought (>${RSI_OVERBOUGHT})`);
-    if(prevRsi!==null && rsi < prevRsi){ score-=1; reasons.push("RSI overbought mulai turun lagi (potensi koreksi)"); }
-  }else if(rsi >= 50){
-    score+=1; reasons.push(`RSI(${RSI_PERIOD})=${fmt(rsi,1)} -> zona bullish (50-${RSI_OVERBOUGHT})`);
-  }else{
-    score-=1; reasons.push(`RSI(${RSI_PERIOD})=${fmt(rsi,1)} -> zona bearish (${RSI_OVERSOLD}-50)`);
-  }
-
-  let signal = score>=2 ? "BUY" : (score<=-2 ? "SELL" : "HOLD");
-
-  // Jangan BUY kalau lagi overbought parah, jangan SELL kalau lagi oversold parah (hindari entry telat)
-  if(signal==="BUY" && rsi>RSI_OVERBOUGHT){ signal="HOLD"; reasons.push("Diturunkan ke HOLD: RSI sudah overbought, entry BUY berisiko telat/chasing"); }
-  if(signal==="SELL" && rsi<RSI_OVERSOLD){ signal="HOLD"; reasons.push("Diturunkan ke HOLD: RSI sudah oversold, entry SELL berisiko telat/chasing"); }
-
-  // --- Trend masih berlangsung tapi momentum cross sudah lewat (telat masuk) ---
-  let ongoingLate=false, barsSinceCross=null;
-  let crossIdx=null;
-  for(let i=n-1;i>=1;i--){
-    const c=candles[i], p=candles[i-1];
-    if(c.maFast===null||c.maSlow===null||p.maFast===null||p.maSlow===null) break;
-    const up = p.maFast<=p.maSlow && c.maFast>c.maSlow;
-    const down = p.maFast>=p.maSlow && c.maFast<c.maSlow;
-    if(up || down){ crossIdx=i; break; }
-  }
-  if(crossIdx!==null) barsSinceCross = (n-1)-crossIdx;
-  const trendBias = trendUp ? "BULLISH" : (trendDown ? "BEARISH" : null);
-  if(signal==="HOLD" && trendBias && barsSinceCross!==null && barsSinceCross>ONGOING_LATE_BARS){
-    ongoingLate = true;
-    reasons.push(`Tren ${trendBias} masih berlangsung (MA${MA_FAST_PERIOD} vs MA${MA_SLOW_PERIOD}), tapi cross terakhir sudah ${barsSinceCross} candle lalu - bukan momen entry fresh lagi, tunggu cross/pullback baru`);
-  }
-
-  // --- Konfirmasi Price Action dari candle yang SUDAH CLOSE (swing high/low, breakout, pola reversal) ---
-  const pa = analyzePriceAction(candles);
-  if(pa.reasons && pa.reasons.length) reasons.push(...pa.reasons);
-
-  // Info retrace umum (dihitung lebih awal, dipakai juga saat belum ada pola reversal eksplisit)
-  const generalDir = trendBias==="BULLISH" ? "BUY" : (trendBias==="BEARISH" ? "SELL" : null);
-  const generalCorr = generalDir ? classifyCorrection(pa, last, generalDir) : null;
-
-  if(signal==="BUY"){
-    if(pa.direction==="SELL"){
-      const corr = classifyCorrection(pa, last, "BUY");
-      const structuralBreak = pa.breakoutDown; // close menembus support dgn body kuat = struktur trend sudah pecah
-      if(structuralBreak || (corr && corr.isDeep)){
-        signal="HOLD";
-        reasons.push(structuralBreak
-          ? "Diturunkan ke HOLD: candle close sudah BREAKDOWN support -> ini REVERSAL struktural, bukan sekadar koreksi"
-          : `Diturunkan ke HOLD: retrace sudah dalam (~${fmt(corr.retracePct*100,0)}% dari swing) -> berisiko jadi reversal, bukan koreksi minor lagi`);
-      }else{
-        reasons.push(`Price action: pola ${pa.pattern? pa.pattern.replace(/_/g," ") : "lawan arah"} terdeteksi tapi baru KOREKSI minor (~${corr? fmt(corr.retracePct*100,0):"?"}% retrace), support belum pecah -> sinyal BUY tetap dipertahankan dgn kewaspadaan`);
-      }
-    }else if(generalCorr && generalCorr.isDeep){
-      // Belum ada pola reversal eksplisit, TAPI retrace sudah dalam (>=ambang) -> tetap diturunkan/diwaspadai
-      signal="HOLD";
-      reasons.push(`Diturunkan ke HOLD: harga sudah retrace ~${fmt(generalCorr.retracePct*100,0)}% dari swing (>=${fmt(PA_DEEP_RETRACE*100,0)}%) walau belum ada pola reversal eksplisit -> rawan balik arah, tunggu konfirmasi ulang`);
-    }else if(!pa.confirmed){
-      reasons.push("Catatan: sinyal BUY BELUM dikonfirmasi price action - candle close belum breakout resistance & belum ada pola reversal bullish");
-    }
-  }else if(signal==="SELL"){
-    if(pa.direction==="BUY"){
-      const corr = classifyCorrection(pa, last, "SELL");
-      const structuralBreak = pa.breakoutUp; // close menembus resistance dgn body kuat = struktur trend turun sudah pecah
-      if(structuralBreak || (corr && corr.isDeep)){
-        signal="HOLD";
-        reasons.push(structuralBreak
-          ? "Diturunkan ke HOLD: candle close sudah BREAKOUT resistance -> ini REVERSAL struktural, bukan sekadar koreksi"
-          : `Diturunkan ke HOLD: retrace sudah dalam (~${fmt(corr.retracePct*100,0)}% dari swing) -> berisiko jadi reversal, bukan koreksi minor lagi`);
-      }else{
-        reasons.push(`Price action: pola ${pa.pattern? pa.pattern.replace(/_/g," ") : "lawan arah"} terdeteksi tapi baru KOREKSI minor (~${corr? fmt(corr.retracePct*100,0):"?"}% retrace), resistance belum pecah -> sinyal SELL tetap dipertahankan dgn kewaspadaan`);
-      }
-    }else if(generalCorr && generalCorr.isDeep){
-      signal="HOLD";
-      reasons.push(`Diturunkan ke HOLD: harga sudah retrace ~${fmt(generalCorr.retracePct*100,0)}% dari swing (>=${fmt(PA_DEEP_RETRACE*100,0)}%) walau belum ada pola reversal eksplisit -> rawan balik arah, tunggu konfirmasi ulang`);
-    }else if(!pa.confirmed){
-      reasons.push("Catatan: sinyal SELL BELUM dikonfirmasi price action - candle close belum breakdown support & belum ada pola reversal bearish");
-    }
-  }
-
-  // --- Struktur pasar: BOS (lanjut tren) / CHoCH (potensi awal pembalikan) ---
-  const struct = analyzeStructure(candles);
-  if(struct.trend){
-    reasons.push(`Struktur: tren ${struct.trend==="BULLISH"?"naik (Higher-High/Higher-Low)":"turun (Lower-High/Lower-Low)"}, swing high ${fmt(struct.swingHigh)} / swing low ${fmt(struct.swingLow)}`);
-  }
-  if(struct.event==="BOS"){
-    reasons.push(`Struktur: BOS (Break of Structure) terkonfirmasi -> tren ${struct.trend==="BULLISH"?"naik":"turun"} masih solid, ini kelanjutan tren bukan reversal`);
-  }else if(struct.event==="CHOCH"){
-    reasons.push(`Struktur: CHoCH (Change of Character) terdeteksi -> potensi AWAL PEMBALIKAN dari tren ${struct.trend==="BULLISH"?"naik ke turun":"turun ke naik"}`);
-  }
-  // CHoCH itu sinyal reversal lebih dini & lebih kuat drpd sekadar retrace biasa -> override sinyal walau PA/indikator lain masih searah
-  if(signal==="BUY" && struct.event==="CHOCH" && struct.trend==="BULLISH"){
-    signal="HOLD";
-    reasons.push("Diturunkan ke HOLD: CHoCH terdeteksi (struktur pecah ke bawah) -> indikasi reversal lebih awal & lebih kuat drpd sekadar retrace, meski RSI+MA masih bilang BUY");
-  }else if(signal==="SELL" && struct.event==="CHOCH" && struct.trend==="BEARISH"){
-    signal="HOLD";
-    reasons.push("Diturunkan ke HOLD: CHoCH terdeteksi (struktur pecah ke atas) -> indikasi reversal lebih awal & lebih kuat drpd sekadar retrace, meski RSI+MA masih bilang SELL");
-  }
-
-  // --- Inducement (IDM): bedakan REAL (jebakan valid -> beneran reversal) vs FAKE (bukan trap, lanjut breakout) ---
-  const ind = detectInducement(candles);
-  if(ind){
-    const arah = ind.type==="H" ? "atas (buy-side liquidity)" : "bawah (sell-side liquidity)";
-    if(ind.verdict==="REAL"){
-      reasons.push(`Inducement: REAL - level likuiditas ${fmt(ind.level)} (${arah}) disapu ${ind.barsAgo} candle lalu, lalu terkonfirmasi reversal ke arah ${ind.expectDir} -> ini jebakan valid`);
-    }else if(ind.verdict==="FAKE"){
-      reasons.push(`Inducement: FAKE - level likuiditas ${fmt(ind.level)} (${arah}) sempat disapu tapi harga malah LANJUT ke arah sapuan (bukan reversal) -> ini bukan trap, sinyal yg mengharap reversal ke arah ${ind.expectDir} berisiko salah`);
-    }else{
-      reasons.push(`Inducement: sweep terdeteksi di level ${fmt(ind.level)} (${arah}), ${ind.barsAgo} candle lalu - BELUM terkonfirmasi REAL/FAKE, tunggu candle berikutnya`);
-    }
-    // Kalau sinyal searah dgn arah yg "diharapkan" inducement (expectDir), tapi ternyata FAKE -> ini jebakan buat sinyal itu sendiri, turunkan ke HOLD
-    if(ind.verdict==="FAKE" && signal===ind.expectDir){
-      signal="HOLD";
-      reasons.push(`Diturunkan ke HOLD: sinyal ${ind.expectDir} ini kemungkinan justru KORBAN dari fake inducement (harga sudah lanjut breakout searah sapuan, bukan reversal) -> tunggu setup baru`);
-    }
-  }
-
-  // --- Area Liquidity: BSL (buy-side, kolam equal high) & SSL (sell-side, kolam equal low) ---
-  const liq = detectLiquidityZones(candles);
-  if(liq.bsl){
-    if(!liq.bsl.swept){
-      reasons.push(`Liquidity: area BSL (buy-side) di ${fmt(liq.bsl.bottom)}-${fmt(liq.bsl.top)} dari ${liq.bsl.count} equal high, ${liq.bsl.barsAgo} candle lalu, BELUM disapu -> harga masih "ditarik" ke area ini`);
-    }else{
-      reasons.push(`Liquidity: area BSL di ${fmt(liq.bsl.bottom)}-${fmt(liq.bsl.top)} sudah DISAPU ${liq.bsl.sweptBarsAgo} candle lalu -> likuiditas atas sudah dimakan`);
-    }
-  }
-  if(liq.ssl){
-    if(!liq.ssl.swept){
-      reasons.push(`Liquidity: area SSL (sell-side) di ${fmt(liq.ssl.bottom)}-${fmt(liq.ssl.top)} dari ${liq.ssl.count} equal low, ${liq.ssl.barsAgo} candle lalu, BELUM disapu -> harga masih "ditarik" ke area ini`);
-    }else{
-      reasons.push(`Liquidity: area SSL di ${fmt(liq.ssl.bottom)}-${fmt(liq.ssl.top)} sudah DISAPU ${liq.ssl.sweptBarsAgo} candle lalu -> likuiditas bawah sudah dimakan`);
-    }
-  }
-
-  // --- Order Block / POI (Point of Interest) / Optimal Entry Position ---
-  const ob = detectOrderBlock(candles);
-  if(ob){
-    const statusTxt = ob.mitigated ? `sudah di-retest ${ob.mitigatedBarsAgo} candle lalu (mitigated)` : "BELUM di-retest (fresh, blm disentuh lagi)";
-    reasons.push(`POI: Order Block ${ob.direction} di zona ${fmt(ob.zoneBottom)}-${fmt(ob.zoneTop)} (${ob.barsAgo} candle lalu, ${statusTxt}) -> Optimal Entry Position di ${fmt(ob.optimalEntry)}`);
-    if(!ob.mitigated && signal===ob.direction){
-      reasons.push(`Catatan entry: sinyal ${ob.direction} ini searah dgn POI yg masih fresh -> idealnya tunggu harga retrace ke zona OB (${fmt(ob.zoneBottom)}-${fmt(ob.zoneTop)}) drpd entry market langsung, biar risk/reward lebih baik`);
-    }
-  }
-
-  const entry = last.close;
-  const atr = last.atr14;
-  let takeProfit=null, stopLoss=null;
-  const tpSlDirection = (signal==="BUY"||signal==="SELL") ? signal :
-    (ongoingLate && trendBias==="BULLISH") ? "BUY" :
-    (ongoingLate && trendBias==="BEARISH") ? "SELL" : null;
-  if(atr!==null && atr!==undefined && atr>0){
-    if(tpSlDirection==="BUY"){ stopLoss=entry-atr*ATR_SL_MULT; takeProfit=entry+atr*ATR_TP_MULT; }
-    else if(tpSlDirection==="SELL"){ stopLoss=entry+atr*ATR_SL_MULT; takeProfit=entry-atr*ATR_TP_MULT; }
-  }
-
-  return {
-    signal, score, price: last.close, volConfirmed, reasons,
-    entry, takeProfit, stopLoss, atr,
-    rsi, maFast: last.maFast, maSlow: last.maSlow, crossEvent, barsSinceCross,
-    bias: trendBias,
-    ongoingLate,
-    pendingDirection: tpSlDirection,
-    htfTrend: null,
-    paConfirmed: pa.confirmed, paDirection: pa.direction, paPattern: pa.pattern,
-    paSwingHigh: pa.swingHigh, paSwingLow: pa.swingLow,
-    paIsCorrection: /KOREKSI minor/.test(reasons.join(" ")),
-    paRetracePct: generalCorr ? generalCorr.retracePct : null,
-    structTrend: struct.trend, structEvent: struct.event,
-    structSwingHigh: struct.swingHigh, structSwingLow: struct.swingLow,
-    indVerdict: ind ? ind.verdict : null, indLevel: ind ? ind.level : null,
-    indType: ind ? ind.type : null, indExpectDir: ind ? ind.expectDir : null,
-    indBarsAgo: ind ? ind.barsAgo : null,
-    bslZone: liq.bsl, sslZone: liq.ssl,
-    poi: ob,
-    miniCandles: candles.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
+  const snd = detectSupplyDemandZones(candlesH1);
+  const liqExtra = {
+    demandZone: snd.demand, supplyZone: snd.supply,
+    miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
+
+  // --- Langkah 1: bias D1 ---
+  const structD1 = analyzeStructure(candlesD1);
+  const biasD1 = structD1.trend;
+  if(biasD1!=="BULLISH" && biasD1!=="BEARISH"){
+    reasons.push("D1: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
+    return Object.assign({}, empty, liqExtra, { biasD1 });
+  }
+  reasons.push(`D1: bias ${biasLabelSnd(biasD1)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
+
+  // --- Langkah 2: arah H4 ---
+  const structH4 = analyzeStructure(candlesH4);
+  const dirH4 = structH4.trend;
+  if(dirH4!==biasD1){
+    reasons.push(`H4: arah struktur (${dirH4?biasLabelSnd(dirH4):"gak jelas"}) belum searah dgn bias D1 (${biasLabelSnd(biasD1)}) -> tunggu.`);
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+  }
+  reasons.push(`H4: arah searah D1 (${biasLabelSnd(dirH4)}) -> arah dibidik: ${dirH4==="BULLISH"?"BUY":"SELL"}`);
+  const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+
+  // --- Langkah 3: zona Supply/Demand di H1 (fresh only) ---
+  const zone = mainDir==="BUY" ? snd.demand : snd.supply;
+  if(!zone){
+    reasons.push(`H1: belum ada zona ${mainDir==="BUY"?"DEMAND":"SUPPLY"} yg fresh & valid (base candle + titik asal swing) -> tunggu.`);
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+  }
+  reasons.push(`H1: zona ${zone.type} fresh ditemukan di ${fmt(zone.bottom)}-${fmt(zone.top)} (${zone.baseCandleCount} candle base, titik asal swing struktur)`);
+
+  // --- Langkah 4: harga sudah masuk zona? ---
+  const lastM5 = candlesM5[candlesM5.length-1];
+  const priceInZone = lastM5.low <= zone.top && lastM5.high >= zone.bottom;
+  if(!priceInZone){
+    reasons.push(`M5: harga (${fmt(lastM5.close)}) belum masuk ke zona ${zone.type} -> tunggu harga "ditarik" ke sana.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, zoneReached:false, direction:mainDir });
+  }
+  reasons.push(`M5: harga sudah masuk ke zona ${zone.type} -> tunggu candle konfirmasi reversal (M5${entryMode==="DUAL"?" & M1":" / M1"}).`);
+
+  // --- Langkah 5: konfirmasi reversal candle di M5/M1 (Cascade atau Dual) ---
+  const m5c = checkZoneReversalConfirm(candlesM5, zone, mainDir);
+  const m1c = checkZoneReversalConfirm(candlesM1, zone, mainDir);
+  let entryConfirm=null, entryTf=null;
+  if(entryMode==="DUAL"){
+    if(m5c.confirmed && m1c.confirmed){ entryConfirm=m5c; entryTf="M5+M1"; }
+    else reasons.push(`Entry mode DUAL: butuh M5 DAN M1 sama2 candle reversal closed searah ${mainDir}. M5 ${m5c.confirmed?"✓":"belum"}, M1 ${m1c.confirmed?"✓":"belum"}.`);
+  }else{
+    if(m5c.confirmed){ entryConfirm=m5c; entryTf="M5"; }
+    else if(m1c.confirmed){ entryConfirm=m1c; entryTf="M1"; reasons.push("Entry mode CASCADE: M5 belum confirm, turun cek M1 -> M1 confirm."); }
+    else reasons.push(`Entry mode CASCADE: M5 belum candle reversal searah ${mainDir}, M1 juga belum.`);
+  }
+  if(!entryConfirm){
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, zoneReached:true, direction:mainDir });
+  }
+  reasons.push(`${entryTf}: candle reversal (${entryConfirm.pattern.replace(/_/g," ")}) sudah CLOSE searah ${mainDir} di zona ${zone.type} -> ENTRY.`);
+
+  // --- Hitung entry/SL/TP ---
+  const atrM5 = calcAtr(candlesM5, ATR_PERIOD);
+  const atr = atrM5[atrM5.length-1] || (zone.top-zone.bottom) || 0.0001;
+  const entry = entryConfirm.entryCandle.close;
+  const slBuffer = atr*SND_ATR_SL_BUFFER_MULT;
+  const stopLoss = mainDir==="BUY" ? zone.bottom - slBuffer : zone.top + slBuffer;
+
+  const oppZone = mainDir==="BUY" ? snd.supply : snd.demand;
+  let takeProfit, tpSource;
+  if(oppZone && ((mainDir==="BUY" && oppZone.bottom > entry) || (mainDir==="SELL" && oppZone.top < entry))){
+    takeProfit = mainDir==="BUY" ? oppZone.bottom : oppZone.top;
+    tpSource = `tepi zona ${oppZone.type} lawan`;
+  }else{
+    takeProfit = mainDir==="BUY" ? entry + atr*SND_ATR_TP_MULT : entry - atr*SND_ATR_TP_MULT;
+    tpSource = `fallback ATR M5 x${SND_ATR_TP_MULT}`;
+  }
+  const rr = Math.abs(takeProfit-entry) / (Math.abs(entry-stopLoss) || 0.0001);
+  reasons.push(`TP diambil dari ${tpSource}. RR ~${fmt(rr,2)}`);
+
+  return Object.assign({}, liqExtra, {
+    status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
+    direction: mainDir, biasD1, dirH4, zoneReached:true, entryTf,
+    entry, stopLoss, takeProfit, rr, atrM5: atr,
+    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+  });
+}
+
+function recomputeSnd(tradeSymbol, display){
+  const d1 = S.sndCandles.d1[tradeSymbol], h4 = S.sndCandles.h4[tradeSymbol],
+        h1 = S.sndCandles.h1[tradeSymbol], m5 = S.sndCandles.m5[tradeSymbol], m1 = S.sndCandles.m1[tradeSymbol];
+  if(!m1 || !m1.length) return;
+  const setup = analyzeSndSetup(d1, h4, h1, m5, m1, CFG ? CFG.sndEntryMode : "CASCADE");
+  setup.symbol = display;
+  setup.price = m1[m1.length-1].close;
+  S.sndResults[display] = setup;
+  if(S.baselineDone){
+    S.closeEventCount++;
+    S.lastCloseInfo = `${display} @ ${new Date().toLocaleTimeString("id-ID",{hour12:false})}`;
+  }
+  scheduleRedraw();
 }
 
 /* ============================================================
@@ -1475,40 +1380,6 @@ function applyKlineUpdate(list, k, maxLen){
     list.push(candle);
   }
   return isClosed;
-}
-
-function recomputeSignal(tradeSymbol, display){
-  const raw = S.candles[tradeSymbol];
-  if(!raw || !raw.length) return;
-  const candles = raw.map(c => Object.assign({}, c));
-  addIndicators(candles);
-  const result = generateSignal(candles);
-  if(!result) return;
-  result.symbol = display;
-
-  if(CFG.mtfConfirm && (result.signal==="BUY" || result.signal==="SELL")){
-    const htf = S.htfCandles[tradeSymbol] || [];
-    const closes = htf.map(c=>c.close);
-    if(closes.length>=50){
-      const e9=calcEma(closes,9), e21=calcEma(closes,21), e50=calcEma(closes,50);
-      const a=e9[e9.length-1], b=e21[e21.length-1], c=e50[e50.length-1];
-      let htfTrend = (a>b && b>c) ? "UP" : (a<b && b<c) ? "DOWN" : "SIDEWAYS";
-      result.htfTrend = htfTrend;
-      if(htfTrend==="DOWN" && result.signal==="BUY"){ result.signal="HOLD"; result.reasons.push(`Diturunkan ke HOLD: tren ${CFG.mtfInterval} sedang TURUN (tidak sinkron)`); }
-      else if(htfTrend==="UP" && result.signal==="SELL"){ result.signal="HOLD"; result.reasons.push(`Diturunkan ke HOLD: tren ${CFG.mtfInterval} sedang NAIK (tidak sinkron)`); }
-      else reasonsSyncNote(result, htfTrend);
-    }
-  }
-
-  S.results[display] = result;
-  if(S.baselineDone){
-    S.closeEventCount++;
-    S.lastCloseInfo = `${display} @ ${new Date().toLocaleTimeString("id-ID",{hour12:false})}`;
-  }
-  scheduleRedraw();
-}
-function reasonsSyncNote(result, htfTrend){
-  if(htfTrend==="UP"||htfTrend==="DOWN") result.reasons.push(`Sinkron dengan tren ${CFG.mtfInterval} (${htfTrend})`);
 }
 
 function chunk(arr, size){
@@ -1557,15 +1428,13 @@ function openWsConnection(connId, streamNames, symbolLookup){
           if(closed) recomputeSmc(tradeSymbol, display);
           return;
         }
-        if(streamInterval === CFG.interval){
-          const list = S.candles[tradeSymbol] || (S.candles[tradeSymbol]=[]);
-          S.livePrice[display] = parseFloat(k.c);
-          const closed = applyKlineUpdate(list, k, CANDLE_LIMIT);
-          if(closed) recomputeSignal(tradeSymbol, display);
-        }else if(CFG.mtfConfirm && streamInterval === CFG.mtfInterval){
-          const list = S.htfCandles[tradeSymbol] || (S.htfCandles[tradeSymbol]=[]);
-          applyKlineUpdate(list, k, MTF_CANDLE_LIMIT);
-        }
+        // mode SND
+        const tfKey = Object.keys(SND_TF).find(k2 => SND_TF[k2]===streamInterval);
+        if(!tfKey) return;
+        const list = S.sndCandles[tfKey][tradeSymbol] || (S.sndCandles[tfKey][tradeSymbol]=[]);
+        if(tfKey===SND_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
+        const closed = applyKlineUpdate(list, k, SND_LIMIT[tfKey]);
+        if(closed) recomputeSnd(tradeSymbol, display);
       }catch(e){ log(`Error proses pesan WS: ${e}`, "err"); }
     };
     ws.onerror = (e) => { log(`WS error (conn #${connId})`, "err"); };
@@ -1647,19 +1516,10 @@ function scheduleRedraw(){
   redrawTimer = setTimeout(()=>{ redrawTimer=null; render(); }, 400);
 }
 
-function crossBadge(event){
-  const map = {GOLDEN_CROSS:["Golden Cross▲","#5ee6ff"], DEATH_CROSS:["Death Cross▼","#e07bff"]};
-  return map[event] || null;
-}
-
-/* ============================================================
-   MINI CHART SVG: visualisasi zona breakout (hijau), zona pullback/
-   koreksi (kuning), dan sisa area (netral), dari candle asli scanner.
-   ============================================================ */
 /* ============================================================
    KONTROL ZOOM MINI CHART — tombol kecil (- / reset / +) buat
    memperbesar/memperkecil candle di mini chart, dipakai bareng
-   sama renderMiniZoneChart (RSI+MA) & renderSmcMiniChart (SMC).
+   sama renderSndMiniChart (SND) & renderSmcMiniChart (SMC).
    ============================================================ */
 const CHART_ZOOM_MIN = 0.35, CHART_ZOOM_MAX = 2.4, CHART_ZOOM_STEP = 0.3;
 const CHART_BASE_VISIBLE_CANDLES = 30; // jumlah candle yg tampil pas zoom 100%
@@ -1730,201 +1590,8 @@ function attachPinchZoom(scrollArea, chartKey){
   scrollArea.addEventListener("touchend", (e)=>{ if(e.touches.length<2) pinchStartDist=null; });
 }
 
-function renderMiniZoneChart(r, chartKey){
-  const allCandles = r.miniCandles;
-  if(!allCandles || allCandles.length<5 || r.paSwingHigh==null || r.paSwingLow==null) return null;
-
-  const zoom = S.chartZoom[chartKey] || 1;
-  // zoom ngatur JUMLAH candle yg tampil: zoom < 1 (dikecilkan) -> lebih banyak history candle masuk;
-  // zoom > 1 (diperbesar) -> lebih sedikit candle tapi lebih detail/lebar per candle.
-  const visibleN = Math.max(8, Math.min(allCandles.length, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom)));
-  const candles = allCandles.slice(-visibleN);
-
-  const H=130, padT=8, padB=8;
-  const CANDLE_W = 14*zoom;               // lebar per candle (px) -> menentukan total lebar chart yg bisa digeser
-  const n = candles.length;
-  const chartW = Math.max(n*CANDLE_W, 220);
-  const AXIS_W = 56;                  // lebar kolom harga di samping (statis, gak ikut geser)
-
-  const baseVals = candles.flatMap(c=>[c.high,c.low]).concat([r.paSwingHigh, r.paSwingLow, r.price]);
-  const lo0=Math.min(...baseVals), hi0=Math.max(...baseVals), baseSpan=(hi0-lo0)||1;
-  const within = v => v!==null && v!==undefined && v>=lo0-baseSpan*1.5 && v<=hi0+baseSpan*1.5;
-
-  const showStructHigh = within(r.structSwingHigh);
-  const showStructLow  = within(r.structSwingLow);
-  const showInd        = within(r.indLevel);
-  const showBsl        = r.bslZone && within(r.bslZone.top) && within(r.bslZone.bottom);
-  const showSsl        = r.sslZone && within(r.sslZone.top) && within(r.sslZone.bottom);
-  const showPoi        = r.poi && within(r.poi.zoneTop) && within(r.poi.zoneBottom);
-  const showTp         = r.takeProfit!==null && r.takeProfit!==undefined && within(r.takeProfit);
-  const showSl         = r.stopLoss!==null && r.stopLoss!==undefined && within(r.stopLoss);
-
-  const allVals = baseVals.concat(
-    showStructHigh? [r.structSwingHigh]:[], showStructLow? [r.structSwingLow]:[],
-    showInd? [r.indLevel]:[],
-    showBsl? [r.bslZone.top, r.bslZone.bottom]:[], showSsl? [r.sslZone.top, r.sslZone.bottom]:[],
-    showPoi? [r.poi.zoneTop, r.poi.zoneBottom]:[],
-    showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[]
-  );
-  let lo = Math.min(...allVals), hi = Math.max(...allVals);
-  const span = (hi-lo) || 1;
-  lo -= span*0.08; hi += span*0.08;
-  const y = v => padT + (1 - (v-lo)/(hi-lo)) * (H-padT-padB);
-  const cw = chartW/n;
-
-  const svgParts = [];
-  svgParts.push(`<svg viewBox="0 0 ${chartW} ${H}" width="${chartW}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block;">`);
-  svgParts.push(`<rect x="0" y="0" width="${chartW}" height="${H}" fill="#0b0e11"/>`);
-
-  // zona breakout (di atas swingHigh) & zona pullback (antara swingLow & swingHigh)
-  const yHigh = y(r.paSwingHigh), yLow = y(r.paSwingLow);
-  svgParts.push(`<rect x="0" y="${padT}" width="${chartW}" height="${Math.max(0,yHigh-padT)}" fill="#0ecb81" opacity="0.10"/>`);
-  svgParts.push(`<rect x="0" y="${yHigh}" width="${chartW}" height="${Math.max(0,yLow-yHigh)}" fill="#f0b90b" opacity="0.10"/>`);
-  svgParts.push(`<line x1="0" y1="${yHigh}" x2="${chartW}" y2="${yHigh}" stroke="#f6465d" stroke-width="1" stroke-dasharray="4,3"/>`);
-  svgParts.push(`<line x1="0" y1="${yLow}" x2="${chartW}" y2="${yLow}" stroke="#eaecef" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>`);
-
-  // garis struktur BOS/CHoCH (biru), digambar SEBELUM candle biar candle tetap di atas
-  if(showStructHigh){
-    const yy=y(r.structSwingHigh);
-    svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${r.structEvent==="BOS"&&r.structTrend==="BULLISH"?"BOS":r.structEvent==="CHOCH"&&r.structTrend==="BULLISH"?"CHoCH":"struktur H"}</text>`);
-  }
-  if(showStructLow){
-    const yy=y(r.structSwingLow);
-    svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${r.structEvent==="BOS"&&r.structTrend==="BEARISH"?"BOS":r.structEvent==="CHOCH"&&r.structTrend==="BEARISH"?"CHoCH":"struktur L"}</text>`);
-  }
-  // garis level inducement (ungu, titik-titik)
-  if(showInd){
-    const yy=y(r.indLevel);
-    const col = r.indVerdict==="REAL" ? "#a371f7" : r.indVerdict==="FAKE" ? "#f0b90b" : "#8b949e";
-    svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="${col}" stroke-width="1" stroke-dasharray="1,4"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">IDM ${r.indVerdict||""}</text>`);
-    // tandai candle sweep-nya kalau posisinya masih ada di rentang mini chart yg ditampilkan
-    if(r.indBarsAgo!==null && r.indBarsAgo!==undefined && r.indBarsAgo < n){
-      const sweepIdx = (n-1) - r.indBarsAgo;
-      const cx = sweepIdx*cw + cw/2;
-      svgParts.push(`<circle cx="${cx}" cy="${yy}" r="3.5" fill="none" stroke="${col}" stroke-width="1.2"/>`);
-    }
-  }
-
-  // area BSL (buy-side liquidity, kolam equal high) - kotak merah muda di atas, garis solid kalau masih aktif
-  if(showBsl){
-    const yTop = y(r.bslZone.top), yBot = y(r.bslZone.bottom);
-    const col = r.bslZone.swept ? "#8b949e" : "#f6465d";
-    const op  = r.bslZone.swept ? "0.06" : "0.16";
-    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
-    svgParts.push(`<line x1="0" y1="${yTop}" x2="${chartW}" y2="${yTop}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.bslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">BSL${r.bslZone.swept?" (swept)":""} x${r.bslZone.count}</text>`);
-  }
-  // area SSL (sell-side liquidity, kolam equal low) - kotak putih/abu di bawah
-  if(showSsl){
-    const yTop = y(r.sslZone.top), yBot = y(r.sslZone.bottom);
-    const col = r.sslZone.swept ? "#8b949e" : "#4da3ff";
-    const op  = r.sslZone.swept ? "0.06" : "0.16";
-    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
-    svgParts.push(`<line x1="0" y1="${yBot}" x2="${chartW}" y2="${yBot}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.sslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SSL${r.sslZone.swept?" (swept)":""} x${r.sslZone.count}</text>`);
-  }
-  // POI (Point of Interest) = zona Order Block; digambar solid kalau masih fresh (blm di-retest), pudar kalau sudah mitigated
-  if(showPoi){
-    const yTop = y(r.poi.zoneTop), yBot = y(r.poi.zoneBottom);
-    const col = r.poi.direction==="BUY" ? "#0ecb81" : "#f6465d";
-    const op  = r.poi.mitigated ? "0.08" : "0.22";
-    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
-    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" stroke-dasharray="${r.poi.mitigated?"2,3":"none"}" opacity="0.85"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">POI (OB ${r.poi.direction})${r.poi.mitigated?" - mitigated":""}</text>`);
-    // garis Optimal Entry Position (50% body OB) di tengah zona
-    const yOpt = y(r.poi.optimalEntry);
-    svgParts.push(`<line x1="0" y1="${yOpt}" x2="${chartW}" y2="${yOpt}" stroke="${col}" stroke-width="1" stroke-dasharray="1,3" opacity="0.9"/>`);
-    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
-  }
-
-  // Proyeksi Target (TP) & Stop (SL) dari entry, dgn rasio risk/reward - mirip kotak biru/merah di tool trading
-  if(showTp || showSl){
-    const yEntry = y(r.entry!==null && r.entry!==undefined ? r.entry : r.price);
-    const rrTxt = (showTp && showSl && r.stopLoss!==r.entry)
-      ? ` (RR ${fmt(Math.abs(r.takeProfit-r.entry)/Math.abs(r.entry-r.stopLoss),2)})` : "";
-    if(showTp){
-      const yTp = y(r.takeProfit);
-      svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
-      svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
-      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
-    }
-    if(showSl){
-      const ySl = y(r.stopLoss);
-      svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
-      svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
-      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
-    }
-  }
-
-  // candlesticks
-  candles.forEach((c,i)=>{
-    const cx = i*cw + cw/2;
-    const bullish = c.close>=c.open;
-    const color = bullish ? "#0ecb81" : "#f6465d";
-    const yO=y(c.open), yC=y(c.close), yH=y(c.high), yL=y(c.low);
-    svgParts.push(`<line x1="${cx}" y1="${yH}" x2="${cx}" y2="${yL}" stroke="${color}" stroke-width="1"/>`);
-    const bodyTop = Math.min(yO,yC), bodyH = Math.max(1, Math.abs(yC-yO));
-    svgParts.push(`<rect x="${cx-cw*0.32}" y="${bodyTop}" width="${cw*0.64}" height="${bodyH}" fill="${color}"/>`);
-  });
-
-  // marker harga sekarang
-  const yPrice = y(r.price);
-  svgParts.push(`<circle cx="${chartW-6}" cy="${yPrice}" r="3" fill="#f0b90b"/>`);
-  svgParts.push(`<line x1="0" y1="${yPrice}" x2="${chartW}" y2="${yPrice}" stroke="#f0b90b" stroke-width="0.75" stroke-dasharray="2,3" opacity="0.5"/>`);
-  svgParts.push(`</svg>`);
-
-  // ---- kolom harga di samping (statis, gak ikut ke-scroll bareng chart) ----
-  const axisSvg = [];
-  axisSvg.push(`<svg viewBox="0 0 ${AXIS_W} ${H}" width="${AXIS_W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block; flex-shrink:0;">`);
-  const axisLabel = (val, yy, color)=>`<text x="4" y="${yy+3}" fill="${color}" font-family="ui-monospace,monospace" font-size="9.5">${fmt(val,val>1000?1:4)}</text>`;
-  axisSvg.push(axisLabel(r.paSwingHigh, yHigh, "#f6465d"));
-  axisSvg.push(axisLabel(r.paSwingLow, yLow, "#eaecef"));
-  // hindari label harga sekarang numpuk kalau terlalu deket resistance/support
-  if(Math.abs(yPrice-yHigh)>10 && Math.abs(yPrice-yLow)>10){
-    axisSvg.push(axisLabel(r.price, yPrice, "#f0b90b"));
-  }
-  axisSvg.push(`</svg>`);
-
-  // container: kiri = chart yg bisa digeser (overflow-x:auto), kanan = sumbu harga statis
-  const container = document.createElement("div");
-  container.style.cssText = "display:flex; align-items:stretch; margin-top:6px; border:1px solid #1c222b; border-radius:6px; overflow:hidden;";
-
-  const scrollArea = document.createElement("div");
-  scrollArea.style.cssText = "flex:1; overflow-x:auto; -webkit-overflow-scrolling:touch;";
-  scrollArea.innerHTML = svgParts.join("");
-  container.appendChild(scrollArea);
-
-  const axisArea = document.createElement("div");
-  axisArea.style.cssText = "background:#0b0e11; border-left:1px solid #1c222b;";
-  axisArea.innerHTML = axisSvg.join("");
-  container.appendChild(axisArea);
-
-  // simpan posisi geser tiap kali user scroll manual, biar gak ke-reset pas data refresh
-  scrollArea.addEventListener("scroll", ()=>{
-    S.chartScroll[chartKey] = scrollArea.scrollLeft;
-  });
-  attachPinchZoom(scrollArea, chartKey);
-
-  // pulihkan posisi geser sebelumnya (kalau ada & masih dlm rentang lebar chart skrg).
-  // Kalau belum pernah digeser (chart baru pertama kali render), baru default ke paling kanan (candle terbaru).
-  requestAnimationFrame(()=>{
-    const saved = S.chartScroll[chartKey];
-    const maxScroll = scrollArea.scrollWidth - scrollArea.clientWidth;
-    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
-  });
-
-  const wrap = document.createElement("div");
-  wrap.appendChild(container);
-  wrap.appendChild(buildChartZoomControls(chartKey));
-  return wrap;
-}
-
 /* ============================================================
-   MINI CHART SVG UTK KARTU SMC MULTI-TF — versi lebih ringkas dari
-   renderMiniZoneChart (yg butuh paSwingHigh/paSwingLow khas RSI+MA).
+   MINI CHART SVG UTK KARTU SMC MULTI-TF.
    Fokus: candle M5 + area BSL/SSL + zona Order Block (POI) + TP/SL.
    ============================================================ */
 function renderSmcMiniChart(r, chartKey){
@@ -2109,168 +1776,144 @@ function renderSmcMiniChart(r, chartKey){
 }
 
 /* ============================================================
+   MINI CHART SVG UTK KARTU SND — candle M5 + zona DEMAND (hijau)
+   / SUPPLY (merah) dari H1 + entry candle reversal + TP/SL.
+   ============================================================ */
+function renderSndMiniChart(r, chartKey){
+  const allCandles = r.miniCandles;
+  if(!allCandles || allCandles.length<5) return null;
+
+  const zoom = S.chartZoom[chartKey] || 1;
+  const visibleN = Math.max(8, Math.min(allCandles.length, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom)));
+  const candles = allCandles.slice(-visibleN);
+
+  const H=130, padT=8, padB=8;
+  const CANDLE_W = 14*zoom;
+  const n = candles.length;
+  const chartW = Math.max(n*CANDLE_W, 220);
+  const AXIS_W = 56;
+
+  const baseVals = candles.flatMap(c=>[c.high,c.low]).concat([r.price]);
+  const lo0=Math.min(...baseVals), hi0=Math.max(...baseVals), baseSpan=(hi0-lo0)||1;
+  const within = v => v!==null && v!==undefined && v>=lo0-baseSpan*1.5 && v<=hi0+baseSpan*1.5;
+
+  const showDemand = r.demandZone && within(r.demandZone.top) && within(r.demandZone.bottom);
+  const showSupply = r.supplyZone && within(r.supplyZone.top) && within(r.supplyZone.bottom);
+  const showTp = r.takeProfit!==null && r.takeProfit!==undefined && within(r.takeProfit);
+  const showSl = r.stopLoss!==null && r.stopLoss!==undefined && within(r.stopLoss);
+
+  const allVals = baseVals.concat(
+    showDemand? [r.demandZone.top, r.demandZone.bottom]:[],
+    showSupply? [r.supplyZone.top, r.supplyZone.bottom]:[],
+    showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[]
+  );
+  let lo = Math.min(...allVals), hi = Math.max(...allVals);
+  const span = (hi-lo) || 1;
+  lo -= span*0.08; hi += span*0.08;
+  const y = v => padT + (1 - (v-lo)/(hi-lo)) * (H-padT-padB);
+  const cw = chartW/n;
+
+  const svgParts = [];
+  svgParts.push(`<svg viewBox="0 0 ${chartW} ${H}" width="${chartW}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block;">`);
+  svgParts.push(`<rect x="0" y="0" width="${chartW}" height="${H}" fill="#0b0e11"/>`);
+
+  // zona DEMAND (hijau) — support, area beli
+  if(showDemand){
+    const yTop = y(r.demandZone.top), yBot = y(r.demandZone.bottom);
+    const col = r.demandZone.fresh===false ? "#8b949e" : "#0ecb81";
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="0.18"/>`);
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" opacity="0.85"/>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">DEMAND (${r.demandZone.baseCandleCount} base)</text>`);
+  }
+  // zona SUPPLY (merah) — resistance, area jual
+  if(showSupply){
+    const yTop = y(r.supplyZone.top), yBot = y(r.supplyZone.bottom);
+    const col = r.supplyZone.fresh===false ? "#8b949e" : "#f6465d";
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="0.18"/>`);
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" opacity="0.85"/>`);
+    svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SUPPLY (${r.supplyZone.baseCandleCount} base)</text>`);
+  }
+  // Target (TP) & Stop (SL)
+  if(showTp || showSl){
+    const yEntry = y(r.entry!==null && r.entry!==undefined ? r.entry : r.price);
+    const rrTxt = (showTp && showSl && r.stopLoss!==r.entry)
+      ? ` (RR ${fmt(Math.abs(r.takeProfit-r.entry)/Math.abs(r.entry-r.stopLoss),2)})` : "";
+    if(showTp){
+      const yTp = y(r.takeProfit);
+      svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
+      svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
+    }
+    if(showSl){
+      const ySl = y(r.stopLoss);
+      svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
+      svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
+    }
+  }
+
+  // candlesticks
+  candles.forEach((c,i)=>{
+    const cx = i*cw + cw/2;
+    const bullish = c.close>=c.open;
+    const color = bullish ? "#0ecb81" : "#f6465d";
+    const yO=y(c.open), yC=y(c.close), yH=y(c.high), yL=y(c.low);
+    svgParts.push(`<line x1="${cx}" y1="${yH}" x2="${cx}" y2="${yL}" stroke="${color}" stroke-width="1"/>`);
+    const bodyTop = Math.min(yO,yC), bodyH = Math.max(1, Math.abs(yC-yO));
+    svgParts.push(`<rect x="${cx-cw*0.32}" y="${bodyTop}" width="${cw*0.64}" height="${bodyH}" fill="${color}"/>`);
+  });
+
+  // marker harga sekarang
+  const yPrice = y(r.price);
+  svgParts.push(`<circle cx="${chartW-6}" cy="${yPrice}" r="3" fill="#f0b90b"/>`);
+  svgParts.push(`<line x1="0" y1="${yPrice}" x2="${chartW}" y2="${yPrice}" stroke="#f0b90b" stroke-width="0.75" stroke-dasharray="2,3" opacity="0.5"/>`);
+  svgParts.push(`</svg>`);
+
+  const axisSvg = [];
+  axisSvg.push(`<svg viewBox="0 0 ${AXIS_W} ${H}" width="${AXIS_W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block; flex-shrink:0;">`);
+  const axisLabel = (val, yy, color)=>`<text x="4" y="${yy+3}" fill="${color}" font-family="ui-monospace,monospace" font-size="9.5">${fmt(val,val>1000?1:4)}</text>`;
+  axisSvg.push(axisLabel(hi0, y(hi0), "#f6465d"));
+  axisSvg.push(axisLabel(lo0, y(lo0), "#eaecef"));
+  if(Math.abs(yPrice-y(hi0))>10 && Math.abs(yPrice-y(lo0))>10){
+    axisSvg.push(axisLabel(r.price, yPrice, "#f0b90b"));
+  }
+  axisSvg.push(`</svg>`);
+
+  const container = document.createElement("div");
+  container.style.cssText = "display:flex; align-items:stretch; margin-top:6px; border:1px solid #1c222b; border-radius:6px; overflow:hidden;";
+
+  const scrollArea = document.createElement("div");
+  scrollArea.style.cssText = "flex:1; overflow-x:auto; -webkit-overflow-scrolling:touch;";
+  scrollArea.innerHTML = svgParts.join("");
+  container.appendChild(scrollArea);
+
+  const axisArea = document.createElement("div");
+  axisArea.style.cssText = "background:#0b0e11; border-left:1px solid #1c222b;";
+  axisArea.innerHTML = axisSvg.join("");
+  container.appendChild(axisArea);
+
+  scrollArea.addEventListener("scroll", ()=>{
+    S.chartScroll[chartKey] = scrollArea.scrollLeft;
+  });
+  attachPinchZoom(scrollArea, chartKey);
+
+  requestAnimationFrame(()=>{
+    const saved = S.chartScroll[chartKey];
+    const maxScroll = scrollArea.scrollWidth - scrollArea.clientWidth;
+    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
+  });
+
+  const wrap = document.createElement("div");
+  wrap.appendChild(container);
+  wrap.appendChild(buildChartZoomControls(chartKey));
+  return wrap;
+}
+
+/* ============================================================
    VALIDASI LIVE: cek apakah candle sudah koreksi/berbalik
    dari harga live (tick) sebelum candle berikutnya CLOSE,
    supaya sinyal BUY/SELL yang sudah tertinggal jadi kelihatan.
    ============================================================ */
-function evalLiveStatus(r){
-  if(r.signal!=="BUY" && r.signal!=="SELL") return null;
-  if(r.entry===null || r.entry===undefined || r.stopLoss===null || r.stopLoss===undefined) return null;
-  const live = S.livePrice[r.symbol];
-  if(live===undefined || live===null || isNaN(live)) return null;
-
-  if(r.signal==="BUY"){
-    if(live <= r.stopLoss){
-      return {level:"invalid", text:`❌ Harga live (${fmt(live)}) sudah menembus SL — sinyal BUY ini kemungkinan sudah tidak valid lagi. Tunggu candle close berikutnya untuk re-analisa.`};
-    }
-    if(r.takeProfit!==null && live >= r.takeProfit){
-      return {level:"tp", text:`✅ Harga live (${fmt(live)}) sudah mencapai area TP.`};
-    }
-    if(live < r.entry){
-      return {level:"warn", text:`⚠️ Harga live (${fmt(live)}) sudah koreksi turun di bawah entry (${fmt(r.entry)}) — momentum melemah/berpotensi berbalik. Sinyal ini berdasar candle yang sudah closed, belum tentu masih valid sekarang.`};
-    }
-  }else{ // SELL
-    if(live >= r.stopLoss){
-      return {level:"invalid", text:`❌ Harga live (${fmt(live)}) sudah menembus SL — sinyal SELL ini kemungkinan sudah tidak valid lagi. Tunggu candle close berikutnya untuk re-analisa.`};
-    }
-    if(r.takeProfit!==null && live <= r.takeProfit){
-      return {level:"tp", text:`✅ Harga live (${fmt(live)}) sudah mencapai area TP.`};
-    }
-    if(live > r.entry){
-      return {level:"warn", text:`⚠️ Harga live (${fmt(live)}) sudah koreksi naik di atas entry (${fmt(r.entry)}) — momentum melemah/berpotensi berbalik. Sinyal ini berdasar candle yang sudah closed, belum tentu masih valid sekarang.`};
-    }
-  }
-  return null;
-}
-
-function buildCard(r, kind){
-  const div = document.createElement("div");
-  div.className = "card " + kind;
-
-  const liveStatus = evalLiveStatus(r);
-  if(liveStatus && liveStatus.level==="invalid") div.classList.add("live-invalidated");
-
-  const row1 = document.createElement("div"); row1.className="row1";
-  const sym = document.createElement("span"); sym.className="sym"; sym.textContent = r.symbol;
-  const badge = document.createElement("span"); badge.className="badge "+kind;
-  badge.textContent = kind==="ongoing" ? `TREND ${r.bias}` : `${r.signal} (${r.score>0?"+":""}${r.score})`;
-  row1.appendChild(sym);
-  if(kind==="ongoing" && r.pendingDirection){
-    const dir = document.createElement("span");
-    dir.className = "dirbadge " + (r.pendingDirection==="BUY" ? "buy" : "sell");
-    dir.textContent = r.pendingDirection==="BUY" ? "B" : "S";
-    row1.appendChild(dir);
-  }
-  row1.appendChild(badge);
-  div.appendChild(row1);
-
-  const priceLine = document.createElement("div");
-  const liveVal = S.livePrice[r.symbol];
-  const liveDiffers = liveVal!==undefined && liveVal!==null && Math.abs(liveVal - r.price) > (r.price*0.0000001);
-  priceLine.innerHTML = `price: <span class="price">${fmt(r.price)}</span>` + (r.volConfirmed ? ` &nbsp; vol_ok:<span style="color:var(--buy)">Y</span>` : ` &nbsp; vol_ok:<span style="color:var(--dim2)">N</span>`) +
-    (liveDiffers ? ` &nbsp; <span class="liveprice">live: ${fmt(liveVal)}</span>` : "");
-  div.appendChild(priceLine);
-
-  const tags = document.createElement("div"); tags.className="tags";
-  if(r.htfTrend){ const t=document.createElement("span"); t.className="tag"; t.textContent=`htf:${r.htfTrend}`; tags.appendChild(t); }
-  const cb = crossBadge(r.crossEvent);
-  if(cb){ const t=document.createElement("span"); t.className="tag"; t.textContent=cb[0]; t.style.color=cb[1]; tags.appendChild(t); }
-  if(r.bias){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`bias ${r.bias==="BULLISH"?"naik":"turun"}`; tags.appendChild(t); }
-  if(r.rsi!==null && r.rsi!==undefined){
-    const t=document.createElement("span");
-    t.className = "tag " + (r.rsi>=RSI_OVERBOUGHT ? "ob-sell" : r.rsi<=RSI_OVERSOLD ? "ob-buy" : "");
-    t.textContent = `RSI: ${fmt(r.rsi,1)}`;
-    tags.appendChild(t);
-  }
-  if(r.maFast!==null && r.maSlow!==null && r.maFast!==undefined && r.maSlow!==undefined){
-    const t=document.createElement("span"); t.className="tag";
-    t.textContent = `MA${MA_FAST_PERIOD}: ${fmt(r.maFast,4)} / MA${MA_SLOW_PERIOD}: ${fmt(r.maSlow,4)}`;
-    tags.appendChild(t);
-  }
-  if(r.paIsCorrection){
-    const t=document.createElement("span"); t.className="tag";
-    t.textContent = "PA: koreksi minor (sinyal tetap jalan)";
-    tags.appendChild(t);
-  }else if(r.paDirection){
-    const t=document.createElement("span");
-    t.className = "tag " + (r.paDirection==="BUY" ? "ob-buy" : "ob-sell");
-    t.textContent = `PA: ${r.paDirection==="BUY"?"konfirmasi naik":"konfirmasi turun"}${r.paPattern? " ("+r.paPattern.replace(/_/g," ")+")":""}`;
-    tags.appendChild(t);
-  }else{
-    const t=document.createElement("span"); t.className="tag"; t.textContent="PA: belum konfirmasi";
-    tags.appendChild(t);
-  }
-  if(r.structEvent==="BOS"){
-    const t=document.createElement("span");
-    t.className = "tag " + (r.structTrend==="BULLISH" ? "ob-buy" : "ob-sell");
-    t.textContent = `BOS: lanjut ${r.structTrend==="BULLISH"?"naik":"turun"}`;
-    tags.appendChild(t);
-  }else if(r.structEvent==="CHOCH"){
-    const t=document.createElement("span");
-    t.className = "tag " + (r.structTrend==="BULLISH" ? "ob-sell" : "ob-buy"); // CHoCH = lawan arah tren lama
-    t.textContent = `CHoCH: waspada reversal ${r.structTrend==="BULLISH"?"turun":"naik"}`;
-    tags.appendChild(t);
-  }
-  if(r.indVerdict==="REAL"){
-    const t=document.createElement("span");
-    t.className = "tag " + (r.indExpectDir==="BUY" ? "ob-buy" : "ob-sell");
-    t.textContent = `Inducement: REAL (jebakan valid, arah ${r.indExpectDir})`;
-    tags.appendChild(t);
-  }else if(r.indVerdict==="FAKE"){
-    const t=document.createElement("span"); t.className="tag";
-    t.style.color="var(--amber)"; t.style.borderColor="var(--amber)";
-    t.textContent = `Inducement: FAKE (bukan trap, breakout asli)`;
-    tags.appendChild(t);
-  }else if(r.indVerdict==="PENDING"){
-    const t=document.createElement("span"); t.className="tag";
-    t.textContent = `Inducement: sweep terdeteksi, blm terkonfirmasi`;
-    tags.appendChild(t);
-  }
-  if(tags.children.length) div.appendChild(tags);
-
-  const miniChart = renderMiniZoneChart(r, kind + "|" + r.symbol);
-  if(miniChart) div.appendChild(miniChart);
-
-  if(kind==="ongoing"){
-    const note = document.createElement("div"); note.className="note";
-    let txt = "(tunggu cross MA baru / pullback)";
-    if(r.barsSinceCross!==null && r.barsSinceCross!==undefined) txt += ` [cross terakhir: ${r.barsSinceCross} candle lalu]`;
-    note.textContent = txt;
-    div.appendChild(note);
-  }
-
-  if(r.takeProfit!==null && r.stopLoss!==null){
-    const tpsl = document.createElement("div"); tpsl.className="tpsl";
-    tpsl.innerHTML = (kind!=="ongoing" ? `<div class="entry-line"><b>Entry</b>: ${fmt(r.entry)}</div>` : "") +
-      `<div class="tpsl-line"><span class="tp">(TP): ${fmt(r.takeProfit)}</span> &nbsp; <span class="sl">(SL): ${fmt(r.stopLoss)}</span></div>`;
-    div.appendChild(tpsl);
-  }
-
-  if(liveStatus){
-    const lb = document.createElement("div");
-    lb.className = "live-box " + liveStatus.level;
-    lb.textContent = liveStatus.text;
-    div.appendChild(lb);
-  }
-
-  if(r.reasons && r.reasons.length){
-    const det = document.createElement("details");
-    const detKey = kind + "|" + r.symbol; // kunci unik per kartu (kind + simbol), biar BUY/SELL/ongoing gak tabrakan
-    det.open = S.openDetails.has(detKey);
-    det.addEventListener("toggle", ()=>{
-      if(det.open) S.openDetails.add(detKey); else S.openDetails.delete(detKey);
-    });
-    const sum = document.createElement("summary"); sum.textContent = "detail alasan";
-    det.appendChild(sum);
-    const ul = document.createElement("ul"); ul.className="reasons";
-    r.reasons.forEach(t=>{ const li=document.createElement("li"); li.textContent=t; ul.appendChild(li); });
-    det.appendChild(ul);
-    div.appendChild(det);
-  }
-
-  return div;
-}
-
 /* ============================================================
    KARTU UTK MODE SMC MULTI-TF — tampilkan bias D1, arah H4,
    status pullback/IDM H1, BOS M5, Order Block, dan entry/SL/TP.
@@ -2361,8 +2004,93 @@ function buildSmcCard(r, kind){
   return div;
 }
 
+/* ============================================================
+   KARTU UTK MODE SND — tampilkan bias D1, arah H4, zona
+   Supply/Demand H1 (fresh), status harga masuk zona, konfirmasi
+   candle reversal M5/M1, dan entry/SL/TP.
+   ============================================================ */
+function buildSndCard(r, kind){
+  const div = document.createElement("div");
+  div.className = "card " + kind;
+
+  const row1 = document.createElement("div"); row1.className="row1";
+  const sym = document.createElement("span"); sym.className="sym"; sym.textContent = r.symbol;
+  const badge = document.createElement("span"); badge.className="badge "+kind;
+  const badgeTxt = {ENTRY_BUY:"ENTRY BUY", ENTRY_SELL:"ENTRY SELL", WAIT:"TUNGGU", NO_SETUP:"NO SETUP"};
+  badge.textContent = badgeTxt[r.status] || r.status;
+  row1.appendChild(sym);
+  if(r.direction){
+    const dir = document.createElement("span");
+    dir.className = "dirbadge " + (r.direction==="BUY" ? "buy" : "sell");
+    dir.textContent = r.direction==="BUY" ? "B" : "S";
+    row1.appendChild(dir);
+  }
+  row1.appendChild(badge);
+  div.appendChild(row1);
+
+  const priceLine = document.createElement("div");
+  const liveVal = S.livePrice[r.symbol];
+  const liveDiffers = liveVal!==undefined && liveVal!==null && r.price && Math.abs(liveVal - r.price) > (r.price*0.0000001);
+  priceLine.innerHTML = `price: <span class="price">${fmt(r.price)}</span>` + (liveDiffers ? ` &nbsp; <span class="liveprice">live: ${fmt(liveVal)}</span>` : "");
+  div.appendChild(priceLine);
+
+  const tags = document.createElement("div"); tags.className="tags";
+  if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`D1 bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
+  if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H4 arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
+  if(r.zoneReached!==undefined){
+    const t=document.createElement("span"); t.className = "tag " + (r.zoneReached ? "confirmed" : "smc-wait");
+    t.textContent = r.zoneReached ? "M5: harga di zona" : "M5: blm masuk zona";
+    tags.appendChild(t);
+  }
+  if(r.entryTf){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`Entry via: ${r.entryTf}`; tags.appendChild(t); }
+  if(tags.children.length) div.appendChild(tags);
+
+  if(r.demandZone || r.supplyZone){
+    const zLine = document.createElement("div"); zLine.className="note";
+    const parts = [];
+    if(r.demandZone) parts.push(`DEMAND ${fmt(r.demandZone.bottom)}-${fmt(r.demandZone.top)}`);
+    if(r.supplyZone) parts.push(`SUPPLY ${fmt(r.supplyZone.bottom)}-${fmt(r.supplyZone.top)}`);
+    zLine.textContent = `Zona H1: ${parts.join(" | ")}`;
+    div.appendChild(zLine);
+  }
+
+  if(r.entry!==undefined && r.entry!==null && r.stopLoss!==undefined && r.takeProfit!==undefined){
+    const tpsl = document.createElement("div"); tpsl.className="tpsl";
+    tpsl.innerHTML = `<div class="entry-line"><b>Entry</b>: ${fmt(r.entry)}</div>` +
+      `<div class="tpsl-line"><span class="tp">(TP): ${fmt(r.takeProfit)}</span> &nbsp; <span class="sl">(SL): ${fmt(r.stopLoss)}</span></div>` +
+      (r.rr ? `<div style="color:var(--dim); margin-top:2px;">RR ~${fmt(r.rr,2)}</div>` : "");
+    div.appendChild(tpsl);
+  }
+
+  if(kind==="ongoing"){
+    const note = document.createElement("div"); note.className="note";
+    note.textContent = "(masih menunggu — lihat detail alasan utk tau tahap mana yg belum terpenuhi)";
+    div.appendChild(note);
+  }
+
+  const miniChart = renderSndMiniChart(r, kind + "|snd|" + r.symbol);
+  if(miniChart) div.appendChild(miniChart);
+
+  if(r.reasons && r.reasons.length){
+    const det = document.createElement("details");
+    const detKey = kind + "|" + r.symbol;
+    det.open = S.openDetails.has(detKey);
+    det.addEventListener("toggle", ()=>{
+      if(det.open) S.openDetails.add(detKey); else S.openDetails.delete(detKey);
+    });
+    const sum = document.createElement("summary"); sum.textContent = "detail alur D1→H4→H1→M5/M1";
+    det.appendChild(sum);
+    const ul = document.createElement("ul"); ul.className="reasons";
+    r.reasons.forEach(t=>{ const li=document.createElement("li"); li.textContent=t; ul.appendChild(li); });
+    det.appendChild(ul);
+    div.appendChild(det);
+  }
+
+  return div;
+}
+
 function render(){
-  if(STRATEGY_MODE==="SMC") renderSmc(); else renderRsiMa();
+  if(STRATEGY_MODE==="SMC") renderSmc(); else renderSnd();
 
   document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
   document.getElementById("stMsgCount").textContent = S.msgCount;
@@ -2374,33 +2102,38 @@ function render(){
   document.getElementById("stLastClose").textContent = S.lastCloseInfo;
 }
 
-function renderRsiMa(){
-  const results = Object.values(S.results);
-  const buys = results.filter(r=>r.signal==="BUY").sort((a,b)=>b.score-a.score);
-  const sells = results.filter(r=>r.signal==="SELL").sort((a,b)=>a.score-b.score);
-  const ongoing = results.filter(r=>r.signal==="HOLD" && r.ongoingLate).sort((a,b)=>a.symbol.localeCompare(b.symbol));
-  const holds = results.filter(r=>r.signal==="HOLD" && !r.ongoingLate).sort((a,b)=>a.symbol.localeCompare(b.symbol));
+function renderSnd(){
+  const results = Object.values(S.sndResults);
+  const buys = results.filter(r=>r.status==="ENTRY_BUY").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const sells = results.filter(r=>r.status==="ENTRY_SELL").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const waiting = results.filter(r=>r.status==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  const noSetup = results.filter(r=>r.status==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
 
-  // Bersihkan openDetails dari kartu yg sudah tidak ada lagi (sinyal berubah/hilang)
   const validKeys = new Set([
     ...buys.map(r=>"buy|"+r.symbol),
     ...sells.map(r=>"sell|"+r.symbol),
-    ...ongoing.map(r=>"ongoing|"+r.symbol),
-    ...holds.map(r=>"analisa|"+r.symbol),
+    ...waiting.map(r=>"ongoing|"+r.symbol),
+    ...noSetup.map(r=>"analisa|"+r.symbol),
+  ]);
+  const validChartKeys = new Set([
+    ...buys.map(r=>"buy|snd|"+r.symbol),
+    ...sells.map(r=>"sell|snd|"+r.symbol),
+    ...waiting.map(r=>"ongoing|snd|"+r.symbol),
+    ...noSetup.map(r=>"analisa|snd|"+r.symbol),
   ]);
   for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
-  for(const k of Object.keys(S.chartScroll)){ if(!validKeys.has(k)) delete S.chartScroll[k]; }
-  for(const k of Object.keys(S.chartZoom)){ if(!validKeys.has(k)) delete S.chartZoom[k]; }
+  for(const k of Object.keys(S.chartScroll)){ if(k.includes("|snd|") && !validChartKeys.has(k)) delete S.chartScroll[k]; }
+  for(const k of Object.keys(S.chartZoom)){ if(k.includes("|snd|") && !validChartKeys.has(k)) delete S.chartZoom[k]; }
 
   document.getElementById("cntBuy").textContent = buys.length;
   document.getElementById("cntSell").textContent = sells.length;
-  document.getElementById("cntOngoing").textContent = ongoing.length;
-  document.getElementById("cntHold").textContent = holds.length;
+  document.getElementById("cntOngoing").textContent = waiting.length;
+  document.getElementById("cntHold").textContent = noSetup.length;
 
-  fillList("listBuy", buys, "buy", "(belum ada sinyal BUY)", buildCard);
-  fillList("listSell", sells, "sell", "(belum ada sinyal SELL)", buildCard);
-  fillList("listOngoing", ongoing, "ongoing", "(belum ada trend berlangsung yang telat masuk)", buildCard);
-  fillList("listAnalisa", holds, "analisa", "(tidak ada coin HOLD/Netral saat ini)", buildCard);
+  fillList("listBuy", buys, "buy", "(belum ada setup entry BUY)", buildSndCard);
+  fillList("listSell", sells, "sell", "(belum ada setup entry SELL)", buildSndCard);
+  fillList("listOngoing", waiting, "ongoing", "(belum ada yg sedang menunggu zona/konfirmasi)", buildSndCard);
+  fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSndCard);
 }
 
 function renderSmc(){
@@ -2441,7 +2174,7 @@ function fillList(elId, items, kind, emptyTxt, buildFn){
   const el = document.getElementById(elId);
   el.innerHTML = "";
   if(!items.length){ const e=document.createElement("div"); e.className="empty"; e.textContent=emptyTxt; el.appendChild(e); return; }
-  items.forEach(r => el.appendChild((buildFn||buildCard)(r, kind)));
+  items.forEach(r => el.appendChild(buildFn(r, kind)));
 }
 
 /* ============================================================
@@ -2455,11 +2188,9 @@ function readConfig(){
   }
   return {
     market: document.getElementById("cfgMarket").value,
-    interval: document.getElementById("cfgInterval").value,
     topN: topNRaw ? parseInt(topNRaw,10) : null,
     minQuoteVolume: parseFloat(document.getElementById("cfgMinVol").value || "0"),
-    mtfConfirm: document.getElementById("cfgMtfConfirm").value === "1",
-    mtfInterval: document.getElementById("cfgMtfInterval").value,
+    sndEntryMode: document.getElementById("cfgSndEntryMode").value,
     manualSymbols: manualSymbols,
     strategyMode: STRATEGY_MODE,
   };
@@ -2471,10 +2202,6 @@ async function startScan(){
     log("Mode \"Scan Coin Tertentu\" aktif tapi belum ada coin yang dicentang/diisi.", "err");
     return;
   }
-  if(CFG.strategyMode!=="SMC" && CFG.mtfConfirm && CFG.mtfInterval === CFG.interval){
-    log("Timeframe MTF sama dengan timeframe utama — MTF dimatikan otomatis untuk request ini.", "warn");
-    CFG.mtfConfirm = false;
-  }
   RUNNING = true;
   document.getElementById("cfgPanel").querySelectorAll("select,input,button").forEach(el=>el.disabled=true);
   document.getElementById("btnStart").disabled = true;
@@ -2485,10 +2212,11 @@ async function startScan(){
   document.getElementById("wsPill").className = "status-pill";
   document.getElementById("headerSub").textContent = CFG.strategyMode==="SMC"
     ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5`
-    : `Market: ${CFG.market} | Timeframe: ${CFG.interval}${CFG.mtfConfirm ? " | MTF: "+CFG.mtfInterval : ""}`;
+    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | D1→H4→H1→M5/M1 (${CFG.sndEntryMode})`;
 
-  S.symbols=[]; S.candles={}; S.htfCandles={}; S.results={}; S.livePrice={}; S.sockets=[]; S.connectStart={};
+  S.symbols=[]; S.livePrice={}; S.sockets=[]; S.connectStart={};
   S.smcCandles={ d1:{}, h4:{}, h1:{}, m5:{} }; S.smcResults={};
+  S.sndCandles={ d1:{}, h4:{}, h1:{}, m5:{}, m1:{} }; S.sndResults={};
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
   render();
@@ -2513,7 +2241,7 @@ async function startScan(){
   const isSmc = CFG.strategyMode==="SMC";
   log(isSmc
     ? `Mengambil riwayat candle awal (D1, H4, H1, M5) untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`
-    : `Mengambil riwayat candle awal untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`);
+    : `Mengambil riwayat candle awal (D1, H4, H1, M5, M1) untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`);
   let ok=0;
   for(let i=0;i<S.symbols.length;i++){
     if(!RUNNING) return;
@@ -2526,8 +2254,11 @@ async function startScan(){
         S.smcCandles.h1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.h1, SMC_LIMIT.h1);
         S.smcCandles.m5[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.m5, SMC_LIMIT.m5);
       }else{
-        S.candles[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, CFG.interval, CANDLE_LIMIT);
-        if(CFG.mtfConfirm) S.htfCandles[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, CFG.mtfInterval, MTF_CANDLE_LIMIT);
+        S.sndCandles.d1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.d1, SND_LIMIT.d1);
+        S.sndCandles.h4[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.h4, SND_LIMIT.h4);
+        S.sndCandles.h1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.h1, SND_LIMIT.h1);
+        S.sndCandles.m5[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.m5, SND_LIMIT.m5);
+        S.sndCandles.m1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.m1, SND_LIMIT.m1);
       }
       ok++;
     }catch(e){
@@ -2542,14 +2273,7 @@ async function startScan(){
   if(isSmc){
     for(const item of S.symbols) recomputeSmc(item.tradeSymbol, item.display);
   }else{
-    for(const item of S.symbols){
-      if(S.candles[item.tradeSymbol] && S.candles[item.tradeSymbol].length){
-        const candles = S.candles[item.tradeSymbol].map(c=>Object.assign({},c));
-        addIndicators(candles);
-        const result = generateSignal(candles);
-        if(result){ result.symbol = item.display; S.results[item.display] = result; }
-      }
-    }
+    for(const item of S.symbols) recomputeSnd(item.tradeSymbol, item.display);
   }
   S.baselineDone = true;
   render();
@@ -2560,8 +2284,7 @@ async function startScan(){
     if(isSmc){
       streamNames.push(`${low}@kline_${SMC_TF.d1}`, `${low}@kline_${SMC_TF.h4}`, `${low}@kline_${SMC_TF.h1}`, `${low}@kline_${SMC_TF.m5}`);
     }else{
-      streamNames.push(`${low}@kline_${CFG.interval}`);
-      if(CFG.mtfConfirm) streamNames.push(`${low}@kline_${CFG.mtfInterval}`);
+      streamNames.push(`${low}@kline_${SND_TF.d1}`, `${low}@kline_${SND_TF.h4}`, `${low}@kline_${SND_TF.h1}`, `${low}@kline_${SND_TF.m5}`, `${low}@kline_${SND_TF.m1}`);
     }
   }
   const chunks = chunk(streamNames, STREAMS_PER_CONNECTION);
@@ -2590,7 +2313,7 @@ function stopScan(){
   document.getElementById("wsPill").className = "status-pill off";
   document.getElementById("headerSub").textContent = STRATEGY_MODE==="SMC"
     ? "Analisa SMC Multi-TF (D1→H4→H1→M5) — dihentikan"
-    : "Analisa RSI + Moving Average (EMA cross) — dihentikan";
+    : "Analisa SND Supply/Demand (D1→H4→H1→M5/M1) — dihentikan";
   log("Dihentikan.", "warn");
 }
 
@@ -2605,27 +2328,27 @@ let EDIT_MODE = false;
 let COIN_LIST = []; // daftar checklist kosong dari awal, isi manual lewat tombol Tambah
 
 /* ============================================================
-   MENU STRATEGI: RSI+MA (default, tak berubah) vs SMC Multi-TF (baru)
+   MENU STRATEGI: SND (Supply/Demand, default, baru) vs SMC Multi-TF
    ============================================================ */
-let STRATEGY_MODE = "RSIMA";
+let STRATEGY_MODE = "SND";
 function setStrategyMode(mode){
   STRATEGY_MODE = mode;
-  document.getElementById("tabStratRsiMa").classList.toggle("active", mode==="RSIMA");
+  document.getElementById("tabStratSnd").classList.toggle("active", mode==="SND");
   document.getElementById("tabStratSmc").classList.toggle("active", mode==="SMC");
-  document.getElementById("rsimaFields").style.display = mode==="RSIMA" ? "contents" : "none";
+  document.getElementById("sndFields").style.display = mode==="SND" ? "contents" : "none";
   document.getElementById("smcFields").style.display = mode==="SMC" ? "block" : "none";
   const titles = mode==="SMC"
     ? { buy:"Sinyal BUY (Entry OB M5)", sell:"Sinyal SELL (Entry OB M5)",
         ongoing:"Menunggu IDM/Liquidity — Bias Searah", analisa:"Analisa (Belum Ada Setup)" }
-    : { buy:"Sinyal BUY", sell:"Sinyal SELL",
-        ongoing:"Sedang Berlangsung — Telat Masuk", analisa:"Analisa (HOLD / Netral)" };
+    : { buy:"Sinyal BUY (Entry Zona Demand)", sell:"Sinyal SELL (Entry Zona Supply)",
+        ongoing:"Menunggu Zona/Konfirmasi — Bias Searah", analisa:"Analisa (Belum Ada Setup)" };
   document.getElementById("titleBuy").textContent = titles.buy;
   document.getElementById("titleSell").textContent = titles.sell;
   document.getElementById("titleOngoing").textContent = titles.ongoing;
   document.getElementById("titleAnalisa").textContent = titles.analisa;
   render();
 }
-document.getElementById("tabStratRsiMa").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("RSIMA"); saveSettings(); } });
+document.getElementById("tabStratSnd").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("SND"); saveSettings(); } });
 document.getElementById("tabStratSmc").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("SMC"); saveSettings(); } });
 
 function getCheckedSet(){
@@ -2739,11 +2462,9 @@ function collectSettingsForSave(){
     coinList: COIN_LIST,
     checkedCoins: Array.from(document.querySelectorAll("#coinChecklist input[type=checkbox]:checked")).map(cb=>cb.value),
     market: document.getElementById("cfgMarket").value,
-    interval: document.getElementById("cfgInterval").value,
     topN: document.getElementById("cfgTopN").value,
     minVol: document.getElementById("cfgMinVol").value,
-    mtfConfirm: document.getElementById("cfgMtfConfirm").value,
-    mtfInterval: document.getElementById("cfgMtfInterval").value,
+    sndEntryMode: document.getElementById("cfgSndEntryMode").value,
   };
 }
 
@@ -2760,11 +2481,9 @@ function loadSettings(){
   if(!saved) return;
 
   if(saved.market) document.getElementById("cfgMarket").value = saved.market;
-  if(saved.interval) document.getElementById("cfgInterval").value = saved.interval;
   if(saved.topN!==undefined) document.getElementById("cfgTopN").value = saved.topN;
   if(saved.minVol!==undefined) document.getElementById("cfgMinVol").value = saved.minVol;
-  if(saved.mtfConfirm) document.getElementById("cfgMtfConfirm").value = saved.mtfConfirm;
-  if(saved.mtfInterval) document.getElementById("cfgMtfInterval").value = saved.mtfInterval;
+  if(saved.sndEntryMode) document.getElementById("cfgSndEntryMode").value = saved.sndEntryMode;
 
   if(Array.isArray(saved.coinList) && saved.coinList.length){
     COIN_LIST = saved.coinList.slice();
@@ -2775,13 +2494,13 @@ function loadSettings(){
     });
   }
   if(saved.scanMode === "CUSTOM" || saved.scanMode === "ALL") setScanMode(saved.scanMode);
-  if(saved.strategyMode === "SMC" || saved.strategyMode === "RSIMA") setStrategyMode(saved.strategyMode);
+  if(saved.strategyMode === "SMC" || saved.strategyMode === "SND") setStrategyMode(saved.strategyMode);
 
   log("Setting sebelumnya berhasil dimuat dari penyimpanan lokal HP ini.", "ok");
 }
 
 // Auto-save tiap ada perubahan input konfigurasi
-["cfgMarket","cfgInterval","cfgTopN","cfgMinVol","cfgMtfConfirm","cfgMtfInterval"].forEach(id=>{
+["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode"].forEach(id=>{
   document.getElementById(id).addEventListener("change", saveSettings);
 });
 document.getElementById("tabAll").addEventListener("click", saveSettings);
