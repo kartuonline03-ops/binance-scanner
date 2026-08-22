@@ -129,6 +129,21 @@
   .section-title.buy{color:var(--buy);}
   .section-title.sell{color:var(--sell);}
   .section-title.ongoing{color:var(--amber);}
+  .section-title.analisa{color:var(--dim);}
+
+  .section-details{margin-top:22px;}
+  .section-details summary{
+    display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:12.5px;
+    text-transform:uppercase; letter-spacing:.6px; margin:0 0 10px; color:var(--dim);
+    cursor:pointer; list-style:none; user-select:none;
+  }
+  .section-details summary::-webkit-details-marker{display:none;}
+  .section-details summary::before{content:"▸ "; color:var(--dim2);}
+  .section-details[open] summary::before{content:"▾ "; color:var(--dim2);}
+  .section-details summary .count{
+    background:var(--panel2); border:1px solid var(--border); border-radius:20px; padding:2px 9px; color:var(--text);
+  }
+  .section-details summary .hint{font-size:10.5px; text-transform:none; letter-spacing:0; color:var(--dim2); margin-left:2px;}
 
   .cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:10px;}
   .card{
@@ -138,12 +153,14 @@
   .card.buy{border-left-color:var(--buy);}
   .card.sell{border-left-color:var(--sell);}
   .card.ongoing{border-left-color:var(--amber);}
+  .card.analisa{border-left-color:var(--dim2);}
   .card .row1{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;}
   .card .sym{font-weight:700; font-size:13px; letter-spacing:.2px;}
   .card .badge{font-size:10.5px; padding:2px 7px; border-radius:4px; font-weight:700;}
   .card .badge.buy{background:#0ecb8122; color:var(--buy);}
   .card .badge.sell{background:#f6465d22; color:var(--sell);}
   .card .badge.ongoing{background:#f0b90b22; color:var(--amber);}
+  .card .badge.analisa{background:#5b647222; color:var(--dim);}
   .card .dirbadge{font-size:10.5px; padding:2px 8px; border-radius:4px; font-weight:800; letter-spacing:.5px;}
   .card .dirbadge.buy{background:#0ecb8122; color:var(--buy); border:1px solid #0ecb8155;}
   .card .dirbadge.sell{background:#f6465d22; color:var(--sell); border:1px solid #f6465d55;}
@@ -154,6 +171,7 @@
   .card .tag.ob-sell{color:var(--sell); border-color:#f6465d33;}
   .card .tag.confirmed{color:var(--buy);}
   .card .tpsl{margin-top:6px; font-size:11.5px;}
+  .card .tpsl .entry-line{margin-bottom:3px;}
   .card .tpsl .tp{color:var(--buy);}
   .card .tpsl .sl{color:var(--sell);}
   .card .note{color:var(--amber); font-size:11px; margin:4px 0;}
@@ -202,7 +220,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16.06 - 22/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16.50 - 22/8/2026</div>
   </div>
 </header>
 
@@ -307,7 +325,10 @@
   <div class="section-title ongoing">Sedang Berlangsung — Telat Masuk <span class="count" id="cntOngoing">0</span></div>
   <div class="cards" id="listOngoing"><div class="empty">(belum ada trend berlangsung yang telat masuk)</div></div>
 
-  <div class="hold-strip">HOLD / NETRAL: <b id="cntHold">0</b> coin (tidak ditampilkan detail)</div>
+  <details class="section-details" id="analisaSection">
+    <summary>Analisa (HOLD / Netral) <span class="count" id="cntHold">0</span> <span class="hint">— klik utk lihat detail</span></summary>
+    <div class="cards" id="listAnalisa"><div class="empty">(tidak ada coin HOLD/Netral saat ini)</div></div>
+  </details>
 
   <div class="log" id="logPanel"></div>
 </main>
@@ -369,6 +390,7 @@ const S = {
   analyzed: 0,
   pollingMode: false, wsZeroStrikes: 0,
   openDetails: new Set(),        // simpan simbol kartu yg "detail alasan"-nya lagi dibuka, biar gak ke-reset tiap render ulang
+  chartScroll: {},               // chartKey (kind|symbol) -> scrollLeft terakhir, biar mini chart gak snap balik ke kanan tiap refresh
 };
 
 /* ============================================================
@@ -1398,7 +1420,7 @@ function crossBadge(event){
    MINI CHART SVG: visualisasi zona breakout (hijau), zona pullback/
    koreksi (kuning), dan sisa area (netral), dari candle asli scanner.
    ============================================================ */
-function renderMiniZoneChart(r){
+function renderMiniZoneChart(r, chartKey){
   const candles = r.miniCandles;
   if(!candles || candles.length<5 || r.paSwingHigh==null || r.paSwingLow==null) return null;
 
@@ -1564,8 +1586,18 @@ function renderMiniZoneChart(r){
   axisArea.innerHTML = axisSvg.join("");
   container.appendChild(axisArea);
 
-  // langsung geser ke candle paling baru (paling kanan) saat pertama render
-  requestAnimationFrame(()=>{ scrollArea.scrollLeft = scrollArea.scrollWidth; });
+  // simpan posisi geser tiap kali user scroll manual, biar gak ke-reset pas data refresh
+  scrollArea.addEventListener("scroll", ()=>{
+    S.chartScroll[chartKey] = scrollArea.scrollLeft;
+  });
+
+  // pulihkan posisi geser sebelumnya (kalau ada & masih dlm rentang lebar chart skrg).
+  // Kalau belum pernah digeser (chart baru pertama kali render), baru default ke paling kanan (candle terbaru).
+  requestAnimationFrame(()=>{
+    const saved = S.chartScroll[chartKey];
+    const maxScroll = scrollArea.scrollWidth - scrollArea.clientWidth;
+    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
+  });
 
   return container;
 }
@@ -1690,7 +1722,7 @@ function buildCard(r, kind){
   }
   if(tags.children.length) div.appendChild(tags);
 
-  const miniChart = renderMiniZoneChart(r);
+  const miniChart = renderMiniZoneChart(r, kind + "|" + r.symbol);
   if(miniChart) div.appendChild(miniChart);
 
   if(kind==="ongoing"){
@@ -1703,8 +1735,8 @@ function buildCard(r, kind){
 
   if(r.takeProfit!==null && r.stopLoss!==null){
     const tpsl = document.createElement("div"); tpsl.className="tpsl";
-    tpsl.innerHTML = (kind!=="ongoing" ? `entry:${fmt(r.entry)} &nbsp; ` : "") +
-      `<span class="tp">(TP): ${fmt(r.takeProfit)}</span> &nbsp; <span class="sl">(SL): ${fmt(r.stopLoss)}</span>`;
+    tpsl.innerHTML = (kind!=="ongoing" ? `<div class="entry-line"><b>Entry</b>: ${fmt(r.entry)}</div>` : "") +
+      `<div class="tpsl-line"><span class="tp">(TP): ${fmt(r.takeProfit)}</span> &nbsp; <span class="sl">(SL): ${fmt(r.stopLoss)}</span></div>`;
     div.appendChild(tpsl);
   }
 
@@ -1738,24 +1770,27 @@ function render(){
   const buys = results.filter(r=>r.signal==="BUY").sort((a,b)=>b.score-a.score);
   const sells = results.filter(r=>r.signal==="SELL").sort((a,b)=>a.score-b.score);
   const ongoing = results.filter(r=>r.signal==="HOLD" && r.ongoingLate).sort((a,b)=>a.symbol.localeCompare(b.symbol));
-  const holdCount = results.length - buys.length - sells.length - ongoing.length;
+  const holds = results.filter(r=>r.signal==="HOLD" && !r.ongoingLate).sort((a,b)=>a.symbol.localeCompare(b.symbol));
 
   // Bersihkan openDetails dari kartu yg sudah tidak ada lagi (sinyal berubah/hilang)
   const validKeys = new Set([
     ...buys.map(r=>"buy|"+r.symbol),
     ...sells.map(r=>"sell|"+r.symbol),
     ...ongoing.map(r=>"ongoing|"+r.symbol),
+    ...holds.map(r=>"analisa|"+r.symbol),
   ]);
   for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
+  for(const k of Object.keys(S.chartScroll)){ if(!validKeys.has(k)) delete S.chartScroll[k]; }
 
   document.getElementById("cntBuy").textContent = buys.length;
   document.getElementById("cntSell").textContent = sells.length;
   document.getElementById("cntOngoing").textContent = ongoing.length;
-  document.getElementById("cntHold").textContent = holdCount;
+  document.getElementById("cntHold").textContent = holds.length;
 
   fillList("listBuy", buys, "buy", "(belum ada sinyal BUY)");
   fillList("listSell", sells, "sell", "(belum ada sinyal SELL)");
   fillList("listOngoing", ongoing, "ongoing", "(belum ada trend berlangsung yang telat masuk)");
+  fillList("listAnalisa", holds, "analisa", "(tidak ada coin HOLD/Netral saat ini)");
 
   document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
   document.getElementById("stMsgCount").textContent = S.msgCount;
