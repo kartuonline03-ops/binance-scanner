@@ -1089,13 +1089,33 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     return empty;
   }
 
+  // --- Liquidity M5: area BSL (buy-side, equal high) & SSL (sell-side, equal low) ---
+  // dipakai sbg konteks target/tarikan likuiditas di TF entry (M5), sama konsepnya spt di mode RSI+MA
+  const liqM5 = detectLiquidityZones(candlesM5);
+  if(liqM5.bsl){
+    reasons.push(liqM5.bsl.swept
+      ? `M5 Liquidity: area BSL (buy-side) di ${fmt(liqM5.bsl.bottom)}-${fmt(liqM5.bsl.top)} sudah DISAPU ${liqM5.bsl.sweptBarsAgo} candle lalu -> likuiditas atas sudah dimakan.`
+      : `M5 Liquidity: area BSL (buy-side) di ${fmt(liqM5.bsl.bottom)}-${fmt(liqM5.bsl.top)} dari ${liqM5.bsl.count} equal high, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  }
+  if(liqM5.ssl){
+    reasons.push(liqM5.ssl.swept
+      ? `M5 Liquidity: area SSL (sell-side) di ${fmt(liqM5.ssl.bottom)}-${fmt(liqM5.ssl.top)} sudah DISAPU ${liqM5.ssl.sweptBarsAgo} candle lalu -> likuiditas bawah sudah dimakan.`
+      : `M5 Liquidity: area SSL (sell-side) di ${fmt(liqM5.ssl.bottom)}-${fmt(liqM5.ssl.top)} dari ${liqM5.ssl.count} equal low, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  }
+  // ikut disertakan di SEMUA return sejak titik ini, biar mini chart & info liquidity tetap tampil
+  // walau status masih WAIT/NO_SETUP di langkah manapun (D1/H4/H1/M5)
+  const liqExtra = {
+    bslZone: liqM5.bsl, sslZone: liqM5.ssl,
+    miniCandles: candlesM5.slice(-30).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
+  };
+
   // --- Langkah 1: bias D1 ---
   const structD1 = analyzeStructure(candlesD1);
   const biasD1 = structD1.trend || "RANGING";
   reasons.push(`D1: bias ${biasLabel(structD1.trend)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
   if(biasD1==="RANGING"){
     reasons.push("D1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
-    return Object.assign({}, empty, { biasD1 });
+    return Object.assign({}, empty, liqExtra, { biasD1 });
   }
 
   // --- Langkah 2: arah H4, harus searah bias D1 ---
@@ -1104,7 +1124,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
   if(!dirH4 || dirH4 !== biasD1){
     reasons.push(`H4 tidak searah dengan bias D1 (${biasLabel(biasD1)}) -> tunggu H4 align dulu, jangan cari entry.`);
-    return Object.assign({}, empty, { biasD1, dirH4 });
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
   }
   const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
   reasons.push(`D1 & H4 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
@@ -1116,7 +1136,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   const hasPullback = !!(corrH1 && corrH1.retracePct > 0.1);
   if(!hasPullback){
     reasons.push("H1 belum terlihat pullback/retracement yang berarti terhadap H4 -> tunggu koreksi dulu sebelum cari entry.");
-    return Object.assign({}, empty, { biasD1, dirH4, hasPullback:false });
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4, hasPullback:false });
   }
   reasons.push(`H1: sedang pullback ~${fmt(corrH1.retracePct*100,0)}% dari swing terakhir (searah koreksi vs H4 ${biasLabel(dirH4)})`);
 
@@ -1129,7 +1149,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     }else{
       reasons.push("H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
     }
-    return Object.assign({}, empty, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
   }
   reasons.push(`H1: IDM sudah diambil (sweep ${indH1.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indH1.verdict}) -> boleh mulai cari trigger entry di M5.`);
 
@@ -1140,7 +1160,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     reasons.push(structM5.event==="CHOCH"
       ? "M5: yang muncul CHoCH (potensi pembalikan), bukan BOS searah rencana -> tunggu, jangan masuk dulu."
       : "M5: belum ada BOS (Break of Structure) yang searah H1/H4 -> tunggu momentum M5 pecah searah dulu.");
-    return Object.assign({}, empty, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, direction:mainDir });
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, direction:mainDir });
   }
   reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti H1/H4.`);
 
@@ -1148,7 +1168,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   const obM5 = detectOrderBlock(candlesM5);
   if(!obM5 || obM5.direction!==mainDir){
     reasons.push("M5: BOS sudah ada tapi candle Order Block belum ketemu/tidak searah -> tunggu konfirmasi lanjutan.");
-    return Object.assign({}, empty, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
   }
 
   // --- Hitung entry/SL/TP: SL kecil di luar OB, TP dibidik ke swing H1 (baru), syukur2 swing H4 ---
@@ -1172,12 +1192,12 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   reasons.push(`Order Block M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
   reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
 
-  return {
+  return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
     ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
     structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
-  };
+  });
 }
 function recomputeSmc(tradeSymbol, display){
   const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
@@ -1809,6 +1829,149 @@ function renderMiniZoneChart(r, chartKey){
 }
 
 /* ============================================================
+   MINI CHART SVG UTK KARTU SMC MULTI-TF — versi lebih ringkas dari
+   renderMiniZoneChart (yg butuh paSwingHigh/paSwingLow khas RSI+MA).
+   Fokus: candle M5 + area BSL/SSL + zona Order Block (POI) + TP/SL.
+   ============================================================ */
+function renderSmcMiniChart(r, chartKey){
+  const candles = r.miniCandles;
+  if(!candles || candles.length<5) return null;
+
+  const H=130, padT=8, padB=8;
+  const CANDLE_W = 14;
+  const n = candles.length;
+  const chartW = Math.max(n*CANDLE_W, 220);
+  const AXIS_W = 56;
+
+  const baseVals = candles.flatMap(c=>[c.high,c.low]).concat([r.price]);
+  const lo0=Math.min(...baseVals), hi0=Math.max(...baseVals), baseSpan=(hi0-lo0)||1;
+  const within = v => v!==null && v!==undefined && v>=lo0-baseSpan*1.5 && v<=hi0+baseSpan*1.5;
+
+  const showBsl = r.bslZone && within(r.bslZone.top) && within(r.bslZone.bottom);
+  const showSsl = r.sslZone && within(r.sslZone.top) && within(r.sslZone.bottom);
+  const showPoi = r.ob && within(r.ob.zoneTop) && within(r.ob.zoneBottom);
+  const showTp  = r.takeProfit!==null && r.takeProfit!==undefined && within(r.takeProfit);
+  const showSl  = r.stopLoss!==null && r.stopLoss!==undefined && within(r.stopLoss);
+
+  const allVals = baseVals.concat(
+    showBsl? [r.bslZone.top, r.bslZone.bottom]:[], showSsl? [r.sslZone.top, r.sslZone.bottom]:[],
+    showPoi? [r.ob.zoneTop, r.ob.zoneBottom]:[],
+    showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[]
+  );
+  let lo = Math.min(...allVals), hi = Math.max(...allVals);
+  const span = (hi-lo) || 1;
+  lo -= span*0.08; hi += span*0.08;
+  const y = v => padT + (1 - (v-lo)/(hi-lo)) * (H-padT-padB);
+  const cw = chartW/n;
+
+  const svgParts = [];
+  svgParts.push(`<svg viewBox="0 0 ${chartW} ${H}" width="${chartW}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block;">`);
+  svgParts.push(`<rect x="0" y="0" width="${chartW}" height="${H}" fill="#0b0e11"/>`);
+
+  // area BSL (buy-side liquidity, kolam equal high)
+  if(showBsl){
+    const yTop = y(r.bslZone.top), yBot = y(r.bslZone.bottom);
+    const col = r.bslZone.swept ? "#8b949e" : "#f6465d";
+    const op  = r.bslZone.swept ? "0.06" : "0.16";
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
+    svgParts.push(`<line x1="0" y1="${yTop}" x2="${chartW}" y2="${yTop}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.bslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
+    svgParts.push(`<text x="4" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">BSL${r.bslZone.swept?" (swept)":""} x${r.bslZone.count}</text>`);
+  }
+  // area SSL (sell-side liquidity, kolam equal low)
+  if(showSsl){
+    const yTop = y(r.sslZone.top), yBot = y(r.sslZone.bottom);
+    const col = r.sslZone.swept ? "#8b949e" : "#4da3ff";
+    const op  = r.sslZone.swept ? "0.06" : "0.16";
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
+    svgParts.push(`<line x1="0" y1="${yBot}" x2="${chartW}" y2="${yBot}" stroke="${col}" stroke-width="1" stroke-dasharray="${r.sslZone.swept?"2,3":"none"}" opacity="0.9"/>`);
+    svgParts.push(`<text x="4" y="${yBot+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SSL${r.sslZone.swept?" (swept)":""} x${r.sslZone.count}</text>`);
+  }
+  // POI = zona Order Block M5
+  if(showPoi){
+    const yTop = y(r.ob.zoneTop), yBot = y(r.ob.zoneBottom);
+    const col = r.ob.direction==="BUY" ? "#0ecb81" : "#f6465d";
+    const op  = r.ob.mitigated ? "0.08" : "0.22";
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="${col}" opacity="${op}"/>`);
+    svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" stroke-dasharray="${r.ob.mitigated?"2,3":"none"}" opacity="0.85"/>`);
+    svgParts.push(`<text x="4" y="${yTop+11}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">POI (OB ${r.ob.direction})${r.ob.mitigated?" - mitigated":""}</text>`);
+    const yOpt = y(r.ob.optimalEntry);
+    svgParts.push(`<line x1="0" y1="${yOpt}" x2="${chartW}" y2="${yOpt}" stroke="${col}" stroke-width="1" stroke-dasharray="1,3" opacity="0.9"/>`);
+    svgParts.push(`<text x="4" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
+  }
+  // Target (TP) & Stop (SL)
+  if(showTp || showSl){
+    const yEntry = y(r.entry!==null && r.entry!==undefined ? r.entry : r.price);
+    const rrTxt = (showTp && showSl && r.stopLoss!==r.entry)
+      ? ` (RR ${fmt(Math.abs(r.takeProfit-r.entry)/Math.abs(r.entry-r.stopLoss),2)})` : "";
+    if(showTp){
+      const yTp = y(r.takeProfit);
+      svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
+      svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
+      svgParts.push(`<text x="4" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
+    }
+    if(showSl){
+      const ySl = y(r.stopLoss);
+      svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
+      svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
+      svgParts.push(`<text x="4" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
+    }
+  }
+
+  // candlesticks
+  candles.forEach((c,i)=>{
+    const cx = i*cw + cw/2;
+    const bullish = c.close>=c.open;
+    const color = bullish ? "#0ecb81" : "#f6465d";
+    const yO=y(c.open), yC=y(c.close), yH=y(c.high), yL=y(c.low);
+    svgParts.push(`<line x1="${cx}" y1="${yH}" x2="${cx}" y2="${yL}" stroke="${color}" stroke-width="1"/>`);
+    const bodyTop = Math.min(yO,yC), bodyH = Math.max(1, Math.abs(yC-yO));
+    svgParts.push(`<rect x="${cx-cw*0.32}" y="${bodyTop}" width="${cw*0.64}" height="${bodyH}" fill="${color}"/>`);
+  });
+
+  // marker harga sekarang
+  const yPrice = y(r.price);
+  svgParts.push(`<circle cx="${chartW-6}" cy="${yPrice}" r="3" fill="#f0b90b"/>`);
+  svgParts.push(`<line x1="0" y1="${yPrice}" x2="${chartW}" y2="${yPrice}" stroke="#f0b90b" stroke-width="0.75" stroke-dasharray="2,3" opacity="0.5"/>`);
+  svgParts.push(`</svg>`);
+
+  // kolom harga di samping (statis)
+  const axisSvg = [];
+  axisSvg.push(`<svg viewBox="0 0 ${AXIS_W} ${H}" width="${AXIS_W}" height="${H}" xmlns="http://www.w3.org/2000/svg" style="display:block; flex-shrink:0;">`);
+  const axisLabel = (val, yy, color)=>`<text x="4" y="${yy+3}" fill="${color}" font-family="ui-monospace,monospace" font-size="9.5">${fmt(val,val>1000?1:4)}</text>`;
+  axisSvg.push(axisLabel(hi0, y(hi0), "#f6465d"));
+  axisSvg.push(axisLabel(lo0, y(lo0), "#eaecef"));
+  if(Math.abs(yPrice-y(hi0))>10 && Math.abs(yPrice-y(lo0))>10){
+    axisSvg.push(axisLabel(r.price, yPrice, "#f0b90b"));
+  }
+  axisSvg.push(`</svg>`);
+
+  const container = document.createElement("div");
+  container.style.cssText = "display:flex; align-items:stretch; margin-top:6px; border:1px solid #1c222b; border-radius:6px; overflow:hidden;";
+
+  const scrollArea = document.createElement("div");
+  scrollArea.style.cssText = "flex:1; overflow-x:auto; -webkit-overflow-scrolling:touch;";
+  scrollArea.innerHTML = svgParts.join("");
+  container.appendChild(scrollArea);
+
+  const axisArea = document.createElement("div");
+  axisArea.style.cssText = "background:#0b0e11; border-left:1px solid #1c222b;";
+  axisArea.innerHTML = axisSvg.join("");
+  container.appendChild(axisArea);
+
+  scrollArea.addEventListener("scroll", ()=>{
+    S.chartScroll[chartKey] = scrollArea.scrollLeft;
+  });
+
+  requestAnimationFrame(()=>{
+    const saved = S.chartScroll[chartKey];
+    const maxScroll = scrollArea.scrollWidth - scrollArea.clientWidth;
+    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
+  });
+
+  return container;
+}
+
+/* ============================================================
    VALIDASI LIVE: cek apakah candle sudah koreksi/berbalik
    dari harga live (tick) sebelum candle berikutnya CLOSE,
    supaya sinyal BUY/SELL yang sudah tertinggal jadi kelihatan.
@@ -2039,6 +2202,9 @@ function buildSmcCard(r, kind){
     note.textContent = "(masih menunggu — lihat detail alasan utk tau tahap mana yg belum terpenuhi)";
     div.appendChild(note);
   }
+
+  const miniChart = renderSmcMiniChart(r, kind + "|smc|" + r.symbol);
+  if(miniChart) div.appendChild(miniChart);
 
   if(r.reasons && r.reasons.length){
     const det = document.createElement("details");
