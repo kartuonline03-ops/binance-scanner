@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.16 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.19 - 23/8/2026</div>
   </div>
 </header>
 
@@ -2410,7 +2410,9 @@ async function startScan(){
 
   S.symbols=[]; S.livePrice={}; S.sockets=[]; S.connectStart={};
   S.smcCandles={ d1:{}, h4:{}, h1:{}, m5:{} }; S.smcResults={};
-  S.smcIndPersist={}; S.smcIndPersistH1={}; // reset persistensi IND biar gak kebawa dari sesi/simbol scan sebelumnya
+  // S.smcIndPersist & S.smcIndPersistH1 SENGAJA TIDAK direset di sini — riwayat IND (REAL)
+  // harus tetap kebawa lintas sesi scan (walau tombol "Mulai Scan" ditekan ulang), bukan cuma
+  // lintas pergeseran jendela candle. Cuma direset kalau memang di-clear manual/reload halaman.
   S.sndCandles={ d1:{}, h4:{}, h1:{}, m5:{}, m1:{} }; S.sndResults={};
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
