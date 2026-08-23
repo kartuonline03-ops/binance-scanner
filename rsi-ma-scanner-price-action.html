@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 15.56 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16.05 - 23/8/2026</div>
   </div>
 </header>
 
@@ -1070,6 +1070,9 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   // (garis step BOS/CHoCH & marker IND, mirip gaya chart SMC pada umumnya)
   const structM5early = analyzeStructure(candlesM5);
   const indM5 = detectInducement(candlesM5);
+  // POI/Order Block M5 dihitung di sini juga (lebih awal), biar zona OB tetap kelihatan
+  // di chart meski status masih WAIT/NO_SETUP -> gak perlu nunggu semua syarat lolos dulu.
+  const obEarly = detectOrderBlock(candlesM5);
 
   // ikut disertakan di SEMUA return sejak titik ini, biar mini chart & info liquidity tetap tampil
   // walau status masih WAIT/NO_SETUP di langkah manapun (D1/H4/H1/M5)
@@ -1079,6 +1082,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
     indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
+    ob: obEarly,
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 
@@ -1137,8 +1141,8 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   }
   reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti H1/H4.`);
 
-  // --- Langkah 6: tentukan Order Block M5 sebagai area entry ---
-  const obM5 = detectOrderBlock(candlesM5);
+  // --- Langkah 6: tentukan Order Block M5 sebagai area entry (pakai yg sudah dihitung di atas) ---
+  const obM5 = obEarly;
   if(!obM5 || obM5.direction!==mainDir){
     reasons.push("M5: BOS sudah ada tapi candle Order Block belum ketemu/tidak searah -> tunggu konfirmasi lanjutan.");
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
