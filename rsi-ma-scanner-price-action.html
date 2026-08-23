@@ -1052,18 +1052,19 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     return empty;
   }
 
-  // --- Liquidity M5: area BSL (buy-side, equal high) & SSL (sell-side, equal low) ---
-  // dipakai sbg konteks target/tarikan likuiditas di TF entry (M5)
-  const liqM5 = detectLiquidityZones(candlesM5);
-  if(liqM5.bsl){
-    reasons.push(liqM5.bsl.swept
-      ? `M5 Liquidity: area BSL (buy-side) di ${fmt(liqM5.bsl.bottom)}-${fmt(liqM5.bsl.top)} sudah DISAPU ${liqM5.bsl.sweptBarsAgo} candle lalu -> likuiditas atas sudah dimakan.`
-      : `M5 Liquidity: area BSL (buy-side) di ${fmt(liqM5.bsl.bottom)}-${fmt(liqM5.bsl.top)} dari ${liqM5.bsl.count} equal high, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  // --- Liquidity: area BSL (buy-side, equal high) & SSL (sell-side, equal low) DARI D1 ---
+  // Liquidity pool yg relevan itu di timeframe tinggi (D1), bukan M5 -> equal high/low
+  // dicari di candle D1, baru levelnya "diproyeksikan" ke chart M5 sbg konteks target harga.
+  const liqD1 = detectLiquidityZones(candlesD1);
+  if(liqD1.bsl){
+    reasons.push(liqD1.bsl.swept
+      ? `D1 Liquidity: area BSL (buy-side) di ${fmt(liqD1.bsl.bottom)}-${fmt(liqD1.bsl.top)} sudah DISAPU ${liqD1.bsl.sweptBarsAgo} candle D1 lalu -> likuiditas atas sudah dimakan.`
+      : `D1 Liquidity: area BSL (buy-side) di ${fmt(liqD1.bsl.bottom)}-${fmt(liqD1.bsl.top)} dari ${liqD1.bsl.count} equal high D1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
   }
-  if(liqM5.ssl){
-    reasons.push(liqM5.ssl.swept
-      ? `M5 Liquidity: area SSL (sell-side) di ${fmt(liqM5.ssl.bottom)}-${fmt(liqM5.ssl.top)} sudah DISAPU ${liqM5.ssl.sweptBarsAgo} candle lalu -> likuiditas bawah sudah dimakan.`
-      : `M5 Liquidity: area SSL (sell-side) di ${fmt(liqM5.ssl.bottom)}-${fmt(liqM5.ssl.top)} dari ${liqM5.ssl.count} equal low, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  if(liqD1.ssl){
+    reasons.push(liqD1.ssl.swept
+      ? `D1 Liquidity: area SSL (sell-side) di ${fmt(liqD1.ssl.bottom)}-${fmt(liqD1.ssl.top)} sudah DISAPU ${liqD1.ssl.sweptBarsAgo} candle D1 lalu -> likuiditas bawah sudah dimakan.`
+      : `D1 Liquidity: area SSL (sell-side) di ${fmt(liqD1.ssl.bottom)}-${fmt(liqD1.ssl.top)} dari ${liqD1.ssl.count} equal low D1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
   }
   // --- Struktur M5 (BOS/CHoCH) & Inducement M5 — dipakai utk visual mini chart eksekusi
   // (garis step BOS/CHoCH & marker IND, mirip gaya chart SMC pada umumnya)
@@ -1073,7 +1074,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   // ikut disertakan di SEMUA return sejak titik ini, biar mini chart & info liquidity tetap tampil
   // walau status masih WAIT/NO_SETUP di langkah manapun (D1/H4/H1/M5)
   const liqExtra = {
-    bslZone: liqM5.bsl, sslZone: liqM5.ssl,
+    bslZone: liqD1.bsl, sslZone: liqD1.ssl,
     structM5Trend: structM5early.trend, structM5Event: structM5early.event,
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
@@ -1698,18 +1699,20 @@ function renderSmcMiniChart(r, chartKey){
   svgParts.push(`<rect x="0" y="0" width="${chartW}" height="${H}" fill="#0b0e11"/>`);
 
   // garis struktur BOS/CHoCH (biru) - swing high/low M5, digambar SEBELUM candle
+  // BOS bullish & CHoCH bearish sama2 "break di atas" -> muncul di garis HIGH.
+  // BOS bearish & CHoCH bullish sama2 "break di bawah" -> muncul di garis LOW.
   if(showStructHigh){
     const yy=y(r.structM5High);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BULLISH" ? "BOS"
-      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Buy Side Liquidity";
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Buy Side Liquidity";
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   if(showStructLow){
     const yy=y(r.structM5Low);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BEARISH" ? "BOS"
-      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Sell Side Liquidity";
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Sell Side Liquidity";
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   // marker inducement (IND) - titik sweep likuiditas minor, ungu titik-titik
