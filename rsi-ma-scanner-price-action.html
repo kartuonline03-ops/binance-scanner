@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.31 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.04 - 23/8/2026</div>
   </div>
 </header>
 
@@ -431,6 +431,10 @@ const S = {
   // --- state khusus mode SMC Multi-TF ---
   smcCandles: { d1:{}, h4:{}, h1:{}, m5:{} },  // tf -> tradeSymbol -> [candle]
   smcResults: {},                              // display -> hasil analisa SMC
+  smcIndPersist: {},                            // tradeSymbol -> IND (REAL) M5 terakhir yg valid, DIPERTAHANKAN
+                                                 // lintas-scan walau candle asalnya sudah keluar dari jendela
+                                                 // lookback (biar gak "lupa" tiap kali jendela candle geser)
+  smcIndPersistH1: {},                          // sama spt di atas, tapi utk IDM H1 (yg dipakai logika entry asli)
   // --- state khusus mode SND (Supply & Demand) ---
   sndCandles: { d1:{}, h4:{}, h1:{}, m5:{}, m1:{} },  // tf -> tradeSymbol -> [candle]
   sndResults: {},                                     // display -> hasil analisa SND
@@ -895,7 +899,7 @@ function detectInducement(candles){
         if(expectDir==="SELL" && cj.close > candles[i].high){ verdict="FAKE"; break; }  // malah lanjut naik -> bukan trap
         if(expectDir==="BUY"  && cj.close < candles[i].low){ verdict="FAKE"; break; }   // malah lanjut turun -> bukan trap
       }
-      const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(n-1-i) };
+      const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(n-1-i), openTime:c.openTime };
       // "latest" = sweep paling baru apa adanya (termasuk FAKE/PENDING di candle berjalan) —
       // ini TETAP dicatat & dikirim ke chart sbg penanda tambahan, bukan dihapus.
       if(!latest || cand.barsAgo < latest.barsAgo) latest = cand;
@@ -1062,7 +1066,7 @@ function detectOrderBlock(candles){
    ============================================================ */
 function biasLabel(trend){ return trend==="BULLISH" ? "naik" : trend==="BEARISH" ? "turun" : "ranging/tidak jelas"; }
 
-function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
+function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol){
   const reasons = [];
   const empty = { status:"NO_SETUP", direction:null, reasons };
 
@@ -1090,7 +1094,31 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   // --- Struktur M5 (BOS/CHoCH) & Inducement M5 — dipakai utk visual mini chart eksekusi
   // (garis step BOS/CHoCH & marker IND, mirip gaya chart SMC pada umumnya)
   const structM5early = analyzeStructure(candlesM5);
-  const indM5 = detectInducement(candlesM5);
+  const indM5Raw = detectInducement(candlesM5);
+
+  // --- Persistensi IND (REAL) M5 LINTAS-SCAN — INI KUNCI PERBAIKANNYA ---
+  // detectInducement() cuma nengok IND_LOOKBACK candle terakhir setiap kali dipanggil ulang,
+  // jadi begitu candle baru masuk & jendelanya geser, REAL lama yg levelnya udah di luar
+  // jendela bakal "hilang" walau statusnya tetap valid. Simpan REAL yg ketemu ke S.smcIndPersist
+  // (per simbol) dan TETAP PAKAI itu sbg status utama sampai ada REAL baru yg menggantikannya —
+  // gak peduli jendela candle udah geser berapa kali.
+  let indM5 = indM5Raw;
+  if(tradeSymbol){
+    const persisted = S.smcIndPersist[tradeSymbol];
+    if(indM5Raw && indM5Raw.verdict==="REAL"){
+      S.smcIndPersist[tradeSymbol] = { level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime };
+    }else if(persisted){
+      // cari posisi candle asal REAL yg tersimpan di array M5 SEKARANG (kalau masih kebawa dlm data)
+      let barsAgo = null;
+      for(let i=candlesM5.length-1; i>=0; i--){
+        if(candlesM5[i].openTime===persisted.openTime){ barsAgo=(candlesM5.length-1-i); break; }
+      }
+      // indM5Raw (kalau ada, FAKE/PENDING di candle berjalan) jadi penanda tambahan "latest",
+      // REAL yg tersimpan tetap jadi status utama yg ditampilkan.
+      indM5 = { level:persisted.level, type:persisted.type, expectDir:persisted.expectDir, verdict:"REAL",
+                barsAgo, latest: indM5Raw ? { level:indM5Raw.level, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null };
+    }
+  }
   // POI/Order Block M5 dihitung di sini juga (lebih awal), biar zona OB tetap kelihatan
   // di chart meski status masih WAIT/NO_SETUP -> gak perlu nunggu semua syarat lolos dulu.
   const obEarly = detectOrderBlock(candlesM5);
@@ -1144,7 +1172,23 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
   reasons.push(`H1: sedang pullback ~${fmt(corrH1.retracePct*100,0)}% dari swing terakhir (searah koreksi vs H4 ${biasLabel(dirH4)})`);
 
   // --- Langkah 4: cek IDM (inducement) di H1 sudah diambil / belum ---
-  const indH1 = detectInducement(candlesH1);
+  // Sama spt IND M5: persisten lintas-scan biar REAL yg udah ketemu gak "lupa" cuma krn
+  // jendela lookback candle H1 geser. Persisted cuma dipakai kalau expectDir-nya masih
+  // relevan dgn mainDir SEKARANG (kalau bias kebalik, IDM lama otomatis tidak dipakai lagi).
+  const indH1Raw = detectInducement(candlesH1);
+  let indH1 = indH1Raw;
+  if(tradeSymbol){
+    const persistedH1 = S.smcIndPersistH1[tradeSymbol];
+    if(indH1Raw && indH1Raw.verdict==="REAL"){
+      S.smcIndPersistH1[tradeSymbol] = { level:indH1Raw.level, type:indH1Raw.type, expectDir:indH1Raw.expectDir, openTime:indH1Raw.openTime };
+    }else if(persistedH1 && persistedH1.expectDir===mainDir){
+      let barsAgo = null;
+      for(let i=candlesH1.length-1; i>=0; i--){
+        if(candlesH1[i].openTime===persistedH1.openTime){ barsAgo=(candlesH1.length-1-i); break; }
+      }
+      indH1 = { level:persistedH1.level, type:persistedH1.type, expectDir:persistedH1.expectDir, verdict:"REAL", barsAgo };
+    }
+  }
   const idmTaken = !!(indH1 && indH1.expectDir===mainDir && indH1.verdict!=="FAKE");
   if(!idmTaken){
     if(indH1 && indH1.expectDir===mainDir && indH1.verdict==="FAKE"){
@@ -1206,7 +1250,7 @@ function recomputeSmc(tradeSymbol, display){
   const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
         h1 = S.smcCandles.h1[tradeSymbol], m5 = S.smcCandles.m5[tradeSymbol];
   if(!m5 || !m5.length) return;
-  const setup = analyzeSmcSetup(d1, h4, h1, m5);
+  const setup = analyzeSmcSetup(d1, h4, h1, m5, tradeSymbol);
   setup.symbol = display;
   setup.price = m5[m5.length-1].close;
   S.smcResults[display] = setup;
@@ -2344,6 +2388,7 @@ async function startScan(){
 
   S.symbols=[]; S.livePrice={}; S.sockets=[]; S.connectStart={};
   S.smcCandles={ d1:{}, h4:{}, h1:{}, m5:{} }; S.smcResults={};
+  S.smcIndPersist={}; S.smcIndPersistH1={}; // reset persistensi IND biar gak kebawa dari sesi/simbol scan sebelumnya
   S.sndCandles={ d1:{}, h4:{}, h1:{}, m5:{}, m1:{} }; S.sndResults={};
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
