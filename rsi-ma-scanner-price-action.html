@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16.05 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.05 - 23/8/2026</div>
   </div>
 </header>
 
@@ -895,7 +895,15 @@ function detectInducement(candles){
         if(expectDir==="BUY"  && cj.close < candles[i].low){ verdict="FAKE"; break; }   // malah lanjut turun -> bukan trap
       }
       const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(n-1-i) };
-      if(!best || cand.barsAgo < best.barsAgo) best = cand; // ambil sweep paling baru/relevan
+      // Ambil kandidat TERBAIK: utamakan sweep yg VERDICT-nya sudah jelas (REAL/FAKE) drpd yg
+      // masih PENDING (baru kejadian di candle berjalan, blm sempat konfirmasi arahnya).
+      // Sweep PENDING di candle live jangan ngalahin sweep lama yg udah jelas hasilnya —
+      // sama spt perbaikan OB: jangan cuma patok ke candle skrg, telusuri riwayat dulu.
+      if(!best){ best = cand; continue; }
+      const bestResolved = best.verdict !== "PENDING";
+      const candResolved = cand.verdict !== "PENDING";
+      if(candResolved && !bestResolved) best = cand;              // resolved selalu menang vs pending
+      else if(candResolved === bestResolved && cand.barsAgo < best.barsAgo) best = cand; // sama2 resolved/pending -> ambil yg paling baru
     }
   }
   return best;
@@ -987,22 +995,27 @@ function detectOrderBlock(candles){
   else if(lastH.price<prevH.price && lastL.price<prevL.price) trend="BEARISH";
   if(!trend) return null;
 
-  const last = candles[n-1];
-  const li = candleBodyInfo(last);
-  const strongBody = li.bodyRatio >= PA_BODY_MIN_RATIO;
-
-  // arah impuls yg mecahin struktur: BUY = impuls naik (BOS lanjut naik / CHoCH awal naik),
-  // SELL = impuls turun (BOS lanjut turun / CHoCH awal turun)
-  let breakoutDir = null;
-  if(trend==="BULLISH" && last.close>lastH.price && strongBody) breakoutDir="BUY";
-  else if(trend==="BULLISH" && last.close<lastL.price && strongBody) breakoutDir="SELL";
-  else if(trend==="BEARISH" && last.close<lastL.price && strongBody) breakoutDir="SELL";
-  else if(trend==="BEARISH" && last.close>lastH.price && strongBody) breakoutDir="BUY";
+  // Cari impuls breakout paling BARU dalam STRUCT_LOOKBACK candle terakhir — TIDAK harus
+  // candle paling akhir. Ini penting: kalau harga rally kuat lalu koreksi/turun lagi, breakout-nya
+  // ada di tengah chart (bukan candle live sekarang), tapi OB dari situ TETAP relevan dipantau
+  // karena harga bisa "napak tilas" balik ke origin-nya kapan saja.
+  let breakoutDir = null, breakoutIdx = null;
+  const breakoutScanFrom = Math.max(1, n - STRUCT_LOOKBACK);
+  for(let i=n-1; i>=breakoutScanFrom; i--){
+    const c = candles[i];
+    const bi = candleBodyInfo(c);
+    if(bi.bodyRatio < PA_BODY_MIN_RATIO) continue;
+    let dir = null;
+    if(trend==="BULLISH" && c.close>lastH.price) dir="BUY";
+    else if(trend==="BULLISH" && c.close<lastL.price) dir="SELL";
+    else if(trend==="BEARISH" && c.close<lastL.price) dir="SELL";
+    else if(trend==="BEARISH" && c.close>lastH.price) dir="BUY";
+    if(dir){ breakoutDir=dir; breakoutIdx=i; break; } // yg PALING BARU duluan (loop mundur dari now)
+  }
   if(!breakoutDir) return null;
 
   // cari candle Order Block: mundur dari SEBELUM candle breakout, ambil candle pertama yg
   // warnanya BERLAWANAN dgn arah impuls (itu candle terakhir sblm "tenaga" impulsif keluar)
-  const breakoutIdx = n-1;
   const scanStart = Math.max(0, breakoutIdx-OB_SCAN_BACK);
   let obIdx = null;
   for(let i=breakoutIdx-1; i>=scanStart; i--){
