@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.04 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.16 - 23/8/2026</div>
   </div>
 </header>
 
@@ -1096,27 +1096,36 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   const structM5early = analyzeStructure(candlesM5);
   const indM5Raw = detectInducement(candlesM5);
 
-  // --- Persistensi IND (REAL) M5 LINTAS-SCAN — INI KUNCI PERBAIKANNYA ---
+  // --- Persistensi RIWAYAT IND (REAL) M5 LINTAS-SCAN ---
   // detectInducement() cuma nengok IND_LOOKBACK candle terakhir setiap kali dipanggil ulang,
   // jadi begitu candle baru masuk & jendelanya geser, REAL lama yg levelnya udah di luar
-  // jendela bakal "hilang" walau statusnya tetap valid. Simpan REAL yg ketemu ke S.smcIndPersist
-  // (per simbol) dan TETAP PAKAI itu sbg status utama sampai ada REAL baru yg menggantikannya —
-  // gak peduli jendela candle udah geser berapa kali.
+  // jendela bakal "hilang" walau statusnya tetap valid. Simpan SEMUA REAL yg pernah ketemu
+  // (bukan cuma yg terakhir) ke S.smcIndPersist per simbol -> riwayatnya TIDAK dihapus,
+  // yg terbaru jadi marker utama, sisanya tetap digambar sbg penanda riwayat di chart.
   let indM5 = indM5Raw;
   if(tradeSymbol){
-    const persisted = S.smcIndPersist[tradeSymbol];
-    if(indM5Raw && indM5Raw.verdict==="REAL"){
-      S.smcIndPersist[tradeSymbol] = { level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime };
-    }else if(persisted){
-      // cari posisi candle asal REAL yg tersimpan di array M5 SEKARANG (kalau masih kebawa dlm data)
-      let barsAgo = null;
-      for(let i=candlesM5.length-1; i>=0; i--){
-        if(candlesM5[i].openTime===persisted.openTime){ barsAgo=(candlesM5.length-1-i); break; }
-      }
-      // indM5Raw (kalau ada, FAKE/PENDING di candle berjalan) jadi penanda tambahan "latest",
-      // REAL yg tersimpan tetap jadi status utama yg ditampilkan.
-      indM5 = { level:persisted.level, type:persisted.type, expectDir:persisted.expectDir, verdict:"REAL",
-                barsAgo, latest: indM5Raw ? { level:indM5Raw.level, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null };
+    if(!S.smcIndPersist[tradeSymbol]) S.smcIndPersist[tradeSymbol] = [];
+    const hist = S.smcIndPersist[tradeSymbol];
+    if(indM5Raw && indM5Raw.verdict==="REAL" && !hist.some(h=>h.openTime===indM5Raw.openTime)){
+      hist.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime });
+      if(hist.length>15) hist.shift(); // batasi biar gak numpuk tanpa batas, tetap simpan 15 riwayat terakhir
+    }
+    if(hist.length){
+      // cari posisi tiap entri riwayat di array M5 SEKARANG (kalau candle aslinya masih kebawa dlm data)
+      const histPos = hist.map(h=>{
+        let barsAgo = null;
+        for(let i=candlesM5.length-1; i>=0; i--){
+          if(candlesM5[i].openTime===h.openTime){ barsAgo=(candlesM5.length-1-i); break; }
+        }
+        return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
+      });
+      const latestH = histPos[histPos.length-1];
+      // indM5Raw (kalau bukan REAL, mis. FAKE/PENDING di candle berjalan) jadi penanda tambahan "latest";
+      // REAL PALING BARU jadi marker utama; sisa riwayat (histPos selain yg terakhir) tetap digambar semua.
+      indM5 = { level:latestH.level, type:latestH.type, expectDir:latestH.expectDir, verdict:"REAL",
+                barsAgo: latestH.barsAgo,
+                latest: (indM5Raw && indM5Raw.verdict!=="REAL") ? { level:indM5Raw.level, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null,
+                history: histPos.slice(0, -1) };
     }
   }
   // POI/Order Block M5 dihitung di sini juga (lebih awal), biar zona OB tetap kelihatan
@@ -1136,6 +1145,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     indM5LatestLevel: indM5 && indM5.latest ? indM5.latest.level : null,
     indM5LatestVerdict: indM5 && indM5.latest ? indM5.latest.verdict : null,
     indM5LatestBarsAgo: indM5 && indM5.latest ? indM5.latest.barsAgo : null,
+    indM5History: indM5 && indM5.history ? indM5.history : [],
     ob: obEarly,
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
@@ -1755,6 +1765,7 @@ function renderSmcMiniChart(r, chartKey){
   const showStructLow  = within(r.structM5Low);
   const showInd         = within(r.indM5Level);
   const showIndLatest   = within(r.indM5LatestLevel);
+  const indHistoryShown = (r.indM5History||[]).filter(h=>within(h.level));
 
   const allVals = baseVals.concat(
     showBsl? [r.bslZone.top, r.bslZone.bottom]:[], showSsl? [r.sslZone.top, r.sslZone.bottom]:[],
@@ -1762,7 +1773,8 @@ function renderSmcMiniChart(r, chartKey){
     showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[],
     showStructHigh? [r.structM5High]:[], showStructLow? [r.structM5Low]:[],
     showInd? [r.indM5Level]:[],
-    showIndLatest? [r.indM5LatestLevel]:[]
+    showIndLatest? [r.indM5LatestLevel]:[],
+    indHistoryShown.map(h=>h.level)
   );
   let lo = Math.min(...allVals), hi = Math.max(...allVals);
   const span = (hi-lo) || 1;
@@ -1816,6 +1828,16 @@ function renderSmcMiniChart(r, chartKey){
       svgParts.push(`<circle cx="${cx2}" cy="${yy2}" r="3" fill="none" stroke="${col2}" stroke-width="1" stroke-dasharray="1,1.5" opacity="0.8"/>`);
       svgParts.push(`<text x="${cx2}" y="${yy2-6}" text-anchor="middle" fill="${col2}" font-family="ui-monospace,monospace" font-size="7.5" opacity="0.85">(${r.indM5LatestVerdict||"?"})</text>`);
     }
+  }
+  // RIWAYAT IND (REAL) sebelumnya — TIDAK dihapus, tetap digambar semua sbg titik kecil ungu
+  // redup di posisi candle & harga asalnya masing2 (yg paling baru sudah digambar full di atas
+  // dgn garis+label utama, jadi di sini cuma sisa riwayat yg lebih lama).
+  for(const h of indHistoryShown){
+    if(h.barsAgo===null || h.barsAgo===undefined || h.barsAgo>=n) continue;
+    const yyh = y(h.level);
+    const sweepIdxH = (n-1) - h.barsAgo;
+    const cxh = sweepIdxH*cw + cw/2;
+    svgParts.push(`<circle cx="${cxh}" cy="${yyh}" r="3" fill="none" stroke="#a371f7" stroke-width="1" opacity="0.45"/>`);
   }
 
   // area BSL (buy-side liquidity, kolam equal high)
