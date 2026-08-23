@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 08.17 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 09.30 - 23/8/2026</div>
   </div>
 </header>
 
@@ -249,16 +249,28 @@
       </div>
       <div id="sndFields" style="display:contents;">
         <div class="field">
-          <label>Konfirmasi entry (M5/M1)</label>
+          <label>Mulai bias dari</label>
+          <select id="cfgSndBiasStart">
+            <option value="D1" selected>D1 → H4 → H1 (default, paling ketat)</option>
+            <option value="H4">H4 → H1 (skip D1, lebih sering ada sinyal)</option>
+            <option value="H1">H1 saja (skip D1 & H4, paling sering — cocok scalping)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>TF eksekusi entry</label>
           <select id="cfgSndEntryMode">
             <option value="CASCADE" selected>Cascade (M5 dulu, blm confirm turun ke M1)</option>
             <option value="DUAL">Dual (M5 DAN M1 harus confirm bareng)</option>
+            <option value="M5">M5 saja (skip M1, entry agak lebih lambat/stabil)</option>
+            <option value="M1">M1 saja (skip M5, paling cepat — cocok scalping)</option>
           </select>
         </div>
         <div class="cfg-note" style="margin:0; grid-column:1 / -1;">
           Mode SND pakai timeframe TETAP alur top-down: <b>D1</b> (bias) → <b>H4</b> (arah menengah) →
           <b>H1</b> (identifikasi zona Supply/Demand — base candle + titik asal swing struktur, fresh only) →
-          <b>M5/M1</b> (tunggu candle reversal closed di zona utk entry).
+          <b>M5/M1</b> (tunggu candle reversal closed di zona utk entry). "Mulai bias dari" & "TF eksekusi"
+          di atas bisa dipangkas biar sinyal lebih sering muncul (cocok scalping) — makin sedikit tahapan,
+          makin cepat & sering, tapi makin longgar filternya.
         </div>
       </div>
       <div id="smcFields" style="display:none; grid-column:1 / -1;">
@@ -388,7 +400,7 @@ const SND_TF = { d1:"1d", h4:"4h", h1:"1h", m5:"5m", m1:"1m" };
 const SND_LIMIT = { d1:120, h4:150, h1:200, m5:200, m1:200 };
 const SND_TRIGGER_TF = "m1";        // TF paling halus -> sumber harga live & trigger realtime utama
 const SND_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar zona S/D, dlm satuan ATR M5
-const SND_ATR_TP_MULT = 3.0;         // fallback TP (kalau blm ada zona lawan yg relevan), dlm satuan ATR M5
+const SND_ATR_TP_MULT = 1.5;         // fallback TP (kalau blm ada zona lawan yg relevan), dlm satuan ATR M5 (diperkecil dari 3.0 -> lebih cocok scalping, TP lebih dekat/cepat kena)
 const SND_BASE_MAX = 3;              // maks candle dlm base/konsolidasi
 const SND_BASE_BODY_RATIO_MAX = 0.5; // body ratio maks candle utk dianggap bagian dari base (bukan candle impulsif)
 const SND_IMPULSE_BODY_RATIO_MIN = 0.5; // body ratio min candle "ninggalin base" (leg impulsif)
@@ -625,7 +637,7 @@ function switchToPollingFallback(){
   pill.className = "status-pill poll";
   document.getElementById("headerSub").textContent = STRATEGY_MODE==="SMC"
     ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5 | fallback polling REST aktif`
-    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | D1→H4→H1→M5/M1 | fallback polling REST aktif`;
+    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode}) | fallback polling REST aktif`;
   startPolling();
 }
 
@@ -1247,11 +1259,16 @@ function checkZoneReversalConfirm(candlesTf, zone, mainDir){
 function biasLabelSnd(trend){ return biasLabel(trend); }
 
 /* ============================================================
-   ANALISA SETUP SND — alur top-down: D1 (bias) -> H4 (arah) ->
+   ANALISA SETUP SND — alur top-down: [D1 (bias)] -> [H4 (arah)] ->
    H1 (identifikasi zona S/D fresh) -> M5/M1 (entry via candle
-   reversal closed di zona). entryMode: "CASCADE" atau "DUAL".
+   reversal closed di zona).
+   - biasStartTf: "D1" (default, paling ketat) / "H4" (skip D1) /
+     "H1" (skip D1 & H4, paling longgar/cepat -> cocok scalping).
+   - entryMode: "CASCADE" / "DUAL" / "M5" (skip M1) / "M1" (skip M5,
+     paling cepat -> cocok scalping).
    ============================================================ */
-function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, entryMode){
+function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, entryMode, biasStartTf){
+  biasStartTf = biasStartTf || "D1";
   const reasons = [];
   const empty = { status:"NO_SETUP", direction:null, reasons };
 
@@ -1269,56 +1286,89 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 
-  // --- Langkah 1: bias D1 ---
-  const structD1 = analyzeStructure(candlesD1);
-  const biasD1 = structD1.trend;
-  if(biasD1!=="BULLISH" && biasD1!=="BEARISH"){
-    reasons.push("D1: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
-    return Object.assign({}, empty, liqExtra, { biasD1 });
-  }
-  reasons.push(`D1: bias ${biasLabelSnd(biasD1)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
+  let biasD1=null, dirH4=null, dirH1=null, mainDir=null;
+  let structD1=null, structH4=null;
 
-  // --- Langkah 2: arah H4 ---
-  const structH4 = analyzeStructure(candlesH4);
-  const dirH4 = structH4.trend;
-  if(dirH4!==biasD1){
-    reasons.push(`H4: arah struktur (${dirH4?biasLabelSnd(dirH4):"gak jelas"}) belum searah dgn bias D1 (${biasLabelSnd(biasD1)}) -> tunggu.`);
-    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+  // --- Langkah 1 & 2: tentukan bias/arah, sesuai TF awal yg dipilih ---
+  if(biasStartTf==="D1"){
+    structD1 = analyzeStructure(candlesD1);
+    biasD1 = structD1.trend;
+    if(biasD1!=="BULLISH" && biasD1!=="BEARISH"){
+      reasons.push("D1: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
+      return Object.assign({}, empty, liqExtra, { biasD1 });
+    }
+    reasons.push(`D1: bias ${biasLabelSnd(biasD1)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
+
+    structH4 = analyzeStructure(candlesH4);
+    dirH4 = structH4.trend;
+    if(dirH4!==biasD1){
+      reasons.push(`H4: arah struktur (${dirH4?biasLabelSnd(dirH4):"gak jelas"}) belum searah dgn bias D1 (${biasLabelSnd(biasD1)}) -> tunggu.`);
+      return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+    }
+    reasons.push(`H4: arah searah D1 (${biasLabelSnd(dirH4)}) -> arah dibidik: ${dirH4==="BULLISH"?"BUY":"SELL"}`);
+    mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+  }else if(biasStartTf==="H4"){
+    reasons.push("Pengaturan: bias dimulai dari H4 (D1 dilewati).");
+    structH4 = analyzeStructure(candlesH4);
+    dirH4 = structH4.trend;
+    if(dirH4!=="BULLISH" && dirH4!=="BEARISH"){
+      reasons.push("H4: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
+      return Object.assign({}, empty, liqExtra, { dirH4 });
+    }
+    reasons.push(`H4: arah ${biasLabelSnd(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)}) -> arah dibidik: ${dirH4==="BULLISH"?"BUY":"SELL"}`);
+    mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+  }else{ // "H1"
+    reasons.push("Pengaturan: bias dimulai dari H1 saja (D1 & H4 dilewati -> mode paling longgar/cepat).");
+    const structH1dir = analyzeStructure(candlesH1);
+    dirH1 = structH1dir.trend;
+    if(dirH1!=="BULLISH" && dirH1!=="BEARISH"){
+      reasons.push("H1: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
+      return Object.assign({}, empty, liqExtra, { dirH1 });
+    }
+    reasons.push(`H1: arah ${biasLabelSnd(dirH1)} (swing high ${fmt(structH1dir.swingHigh)} / swing low ${fmt(structH1dir.swingLow)}) -> arah dibidik: ${dirH1==="BULLISH"?"BUY":"SELL"}`);
+    mainDir = dirH1==="BULLISH" ? "BUY" : "SELL";
   }
-  reasons.push(`H4: arah searah D1 (${biasLabelSnd(dirH4)}) -> arah dibidik: ${dirH4==="BULLISH"?"BUY":"SELL"}`);
-  const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
 
   // --- Langkah 3: zona Supply/Demand di H1 (fresh only) ---
   const zone = mainDir==="BUY" ? snd.demand : snd.supply;
   if(!zone){
     reasons.push(`H1: belum ada zona ${mainDir==="BUY"?"DEMAND":"SUPPLY"} yg fresh & valid (base candle + titik asal swing) -> tunggu.`);
-    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4, dirH1 });
   }
   reasons.push(`H1: zona ${zone.type} fresh ditemukan di ${fmt(zone.bottom)}-${fmt(zone.top)} (${zone.baseCandleCount} candle base, titik asal swing struktur)`);
 
-  // --- Langkah 4: harga sudah masuk zona? ---
-  const lastM5 = candlesM5[candlesM5.length-1];
-  const priceInZone = lastM5.low <= zone.top && lastM5.high >= zone.bottom;
+  // --- Langkah 4: harga sudah masuk zona? (M1 kalau entryMode M1, selain itu pakai M5) ---
+  const zoneCheckCandles = entryMode==="M1" ? candlesM1 : candlesM5;
+  const zoneCheckTf = entryMode==="M1" ? "M1" : "M5";
+  const lastZc = zoneCheckCandles[zoneCheckCandles.length-1];
+  const priceInZone = lastZc.low <= zone.top && lastZc.high >= zone.bottom;
   if(!priceInZone){
-    reasons.push(`M5: harga (${fmt(lastM5.close)}) belum masuk ke zona ${zone.type} -> tunggu harga "ditarik" ke sana.`);
-    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, zoneReached:false, direction:mainDir });
+    reasons.push(`${zoneCheckTf}: harga (${fmt(lastZc.close)}) belum masuk ke zona ${zone.type} -> tunggu harga "ditarik" ke sana.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, zoneReached:false, direction:mainDir });
   }
-  reasons.push(`M5: harga sudah masuk ke zona ${zone.type} -> tunggu candle konfirmasi reversal (M5${entryMode==="DUAL"?" & M1":" / M1"}).`);
+  const zoneMsgTf = entryMode==="DUAL" ? "M5 & M1" : entryMode==="M5" ? "M5" : entryMode==="M1" ? "M1" : "M5 / M1";
+  reasons.push(`${zoneCheckTf}: harga sudah masuk ke zona ${zone.type} -> tunggu candle konfirmasi reversal (${zoneMsgTf}).`);
 
-  // --- Langkah 5: konfirmasi reversal candle di M5/M1 (Cascade atau Dual) ---
-  const m5c = checkZoneReversalConfirm(candlesM5, zone, mainDir);
-  const m1c = checkZoneReversalConfirm(candlesM1, zone, mainDir);
+  // --- Langkah 5: konfirmasi reversal candle sesuai TF eksekusi yg dipilih ---
+  const m5c = (entryMode==="M1") ? null : checkZoneReversalConfirm(candlesM5, zone, mainDir);
+  const m1c = (entryMode==="M5") ? null : checkZoneReversalConfirm(candlesM1, zone, mainDir);
   let entryConfirm=null, entryTf=null;
   if(entryMode==="DUAL"){
     if(m5c.confirmed && m1c.confirmed){ entryConfirm=m5c; entryTf="M5+M1"; }
     else reasons.push(`Entry mode DUAL: butuh M5 DAN M1 sama2 candle reversal closed searah ${mainDir}. M5 ${m5c.confirmed?"✓":"belum"}, M1 ${m1c.confirmed?"✓":"belum"}.`);
-  }else{
+  }else if(entryMode==="M5"){
+    if(m5c.confirmed){ entryConfirm=m5c; entryTf="M5"; }
+    else reasons.push(`Entry mode M5 saja: belum ada candle reversal closed searah ${mainDir} di M5.`);
+  }else if(entryMode==="M1"){
+    if(m1c.confirmed){ entryConfirm=m1c; entryTf="M1"; }
+    else reasons.push(`Entry mode M1 saja: belum ada candle reversal closed searah ${mainDir} di M1.`);
+  }else{ // CASCADE (default)
     if(m5c.confirmed){ entryConfirm=m5c; entryTf="M5"; }
     else if(m1c.confirmed){ entryConfirm=m1c; entryTf="M1"; reasons.push("Entry mode CASCADE: M5 belum confirm, turun cek M1 -> M1 confirm."); }
     else reasons.push(`Entry mode CASCADE: M5 belum candle reversal searah ${mainDir}, M1 juga belum.`);
   }
   if(!entryConfirm){
-    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, zoneReached:true, direction:mainDir });
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, zoneReached:true, direction:mainDir });
   }
   reasons.push(`${entryTf}: candle reversal (${entryConfirm.pattern.replace(/_/g," ")}) sudah CLOSE searah ${mainDir} di zona ${zone.type} -> ENTRY.`);
 
@@ -1343,7 +1393,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
 
   return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
-    direction: mainDir, biasD1, dirH4, zoneReached:true, entryTf,
+    direction: mainDir, biasD1, dirH4, dirH1, zoneReached:true, entryTf,
     entry, stopLoss, takeProfit, rr, atrM5: atr,
     structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
   });
@@ -1353,7 +1403,7 @@ function recomputeSnd(tradeSymbol, display){
   const d1 = S.sndCandles.d1[tradeSymbol], h4 = S.sndCandles.h4[tradeSymbol],
         h1 = S.sndCandles.h1[tradeSymbol], m5 = S.sndCandles.m5[tradeSymbol], m1 = S.sndCandles.m1[tradeSymbol];
   if(!m1 || !m1.length) return;
-  const setup = analyzeSndSetup(d1, h4, h1, m5, m1, CFG ? CFG.sndEntryMode : "CASCADE");
+  const setup = analyzeSndSetup(d1, h4, h1, m5, m1, CFG ? CFG.sndEntryMode : "CASCADE", CFG ? CFG.sndBiasStart : "D1");
   setup.symbol = display;
   setup.price = m1[m1.length-1].close;
   S.sndResults[display] = setup;
@@ -2058,6 +2108,7 @@ function buildSndCard(r, kind){
   const tags = document.createElement("div"); tags.className="tags";
   if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`D1 bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
   if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H4 arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
+  if(r.dirH1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H1 arah: ${biasLabel(r.dirH1)}`; tags.appendChild(t); }
   if(r.zoneReached!==undefined){
     const t=document.createElement("span"); t.className = "tag " + (r.zoneReached ? "confirmed" : "smc-wait");
     t.textContent = r.zoneReached ? "M5: harga di zona" : "M5: blm masuk zona";
@@ -2222,6 +2273,7 @@ function readConfig(){
     topN: topNRaw ? parseInt(topNRaw,10) : null,
     minQuoteVolume: parseFloat(document.getElementById("cfgMinVol").value || "0"),
     sndEntryMode: document.getElementById("cfgSndEntryMode").value,
+    sndBiasStart: document.getElementById("cfgSndBiasStart").value,
     manualSymbols: manualSymbols,
     strategyMode: STRATEGY_MODE,
   };
@@ -2243,7 +2295,7 @@ async function startScan(){
   document.getElementById("wsPill").className = "status-pill";
   document.getElementById("headerSub").textContent = CFG.strategyMode==="SMC"
     ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5`
-    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | D1→H4→H1→M5/M1 (${CFG.sndEntryMode})`;
+    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
 
   S.symbols=[]; S.livePrice={}; S.sockets=[]; S.connectStart={};
   S.smcCandles={ d1:{}, h4:{}, h1:{}, m5:{} }; S.smcResults={};
@@ -2496,6 +2548,7 @@ function collectSettingsForSave(){
     topN: document.getElementById("cfgTopN").value,
     minVol: document.getElementById("cfgMinVol").value,
     sndEntryMode: document.getElementById("cfgSndEntryMode").value,
+    sndBiasStart: document.getElementById("cfgSndBiasStart").value,
   };
 }
 
@@ -2515,6 +2568,7 @@ function loadSettings(){
   if(saved.topN!==undefined) document.getElementById("cfgTopN").value = saved.topN;
   if(saved.minVol!==undefined) document.getElementById("cfgMinVol").value = saved.minVol;
   if(saved.sndEntryMode) document.getElementById("cfgSndEntryMode").value = saved.sndEntryMode;
+  if(saved.sndBiasStart) document.getElementById("cfgSndBiasStart").value = saved.sndBiasStart;
 
   if(Array.isArray(saved.coinList) && saved.coinList.length){
     COIN_LIST = saved.coinList.slice();
@@ -2531,7 +2585,7 @@ function loadSettings(){
 }
 
 // Auto-save tiap ada perubahan input konfigurasi
-["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode"].forEach(id=>{
+["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode","cfgSndBiasStart"].forEach(id=>{
   document.getElementById(id).addEventListener("change", saveSettings);
 });
 document.getElementById("tabAll").addEventListener("click", saveSettings);
