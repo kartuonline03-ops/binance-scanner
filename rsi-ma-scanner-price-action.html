@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 09.30 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 15.56 - 23/8/2026</div>
   </div>
 </header>
 
@@ -1699,20 +1699,22 @@ function renderSmcMiniChart(r, chartKey){
   svgParts.push(`<rect x="0" y="0" width="${chartW}" height="${H}" fill="#0b0e11"/>`);
 
   // garis struktur BOS/CHoCH (biru) - swing high/low M5, digambar SEBELUM candle
+  // Label fallback sengaja TIDAK dinamai "Buy/Sell Side Liquidity" biar tidak ketuker
+  // dgn zona BSL/SSL asli (dari D1, area transparan terpisah di bawah).
   // BOS bullish & CHoCH bearish sama2 "break di atas" -> muncul di garis HIGH.
   // BOS bearish & CHoCH bullish sama2 "break di bawah" -> muncul di garis LOW.
   if(showStructHigh){
     const yy=y(r.structM5High);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BULLISH" ? "BOS"
-      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Buy Side Liquidity";
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Swing High (M5)";
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   if(showStructLow){
     const yy=y(r.structM5Low);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BEARISH" ? "BOS"
-      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Sell Side Liquidity";
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Swing Low (M5)";
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   // marker inducement (IND) - titik sweep likuiditas minor, ungu titik-titik
