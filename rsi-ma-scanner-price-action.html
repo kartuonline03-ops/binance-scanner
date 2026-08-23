@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.05 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 20.31 - 23/8/2026</div>
   </div>
 </header>
 
@@ -861,7 +861,7 @@ function analyzeStructure(candles){
    FAKE inducement (sweep -> ternyata lanjut breakout, bukan trap).
    ============================================================ */
 const IND_MINOR_STRENGTH = 1;    // pivot kecil (1 candle kiri&kanan) utk cari level likuiditas minor
-const IND_LOOKBACK       = 25;   // rentang candle utk cari level minor & candle sweep-nya
+const IND_LOOKBACK       = 60;   // rentang candle utk cari level minor & candle sweep-nya (diperluas biar nangkep IND lebih jauh di histori)
 const IND_CONFIRM_WINDOW = 4;    // brp candle setelah sweep utk tunggu konfirmasi REAL/FAKE
 
 function detectInducement(candles){
@@ -873,6 +873,7 @@ function detectInducement(candles){
 
   // Cari, dari level minor paling baru mundur ke belakang, sweep candle PALING BARU yg ditemukan
   let best = null;
+  let latest = null; // sweep PALING BARU apapun verdict-nya (buat marker "penanda" candle berjalan)
   for(let k=minorPts.length-1; k>=0; k--){
     const level = minorPts[k];
     for(let i=level.i+1; i<n; i++){
@@ -895,18 +896,25 @@ function detectInducement(candles){
         if(expectDir==="BUY"  && cj.close < candles[i].low){ verdict="FAKE"; break; }   // malah lanjut turun -> bukan trap
       }
       const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(n-1-i) };
-      // Ambil kandidat TERBAIK: utamakan sweep yg VERDICT-nya sudah jelas (REAL/FAKE) drpd yg
-      // masih PENDING (baru kejadian di candle berjalan, blm sempat konfirmasi arahnya).
-      // Sweep PENDING di candle live jangan ngalahin sweep lama yg udah jelas hasilnya —
-      // sama spt perbaikan OB: jangan cuma patok ke candle skrg, telusuri riwayat dulu.
+      // "latest" = sweep paling baru apa adanya (termasuk FAKE/PENDING di candle berjalan) —
+      // ini TETAP dicatat & dikirim ke chart sbg penanda tambahan, bukan dihapus.
+      if(!latest || cand.barsAgo < latest.barsAgo) latest = cand;
+      // "best" = status utama yg dipakai label & logika: REAL > FAKE > PENDING — REAL yg sudah
+      // ketemu TIDAK BOLEH hilang/ketiban cuma gara2 ada sweep baru yg ternyata FAKE atau masih
+      // PENDING di candle yg lagi jalan. Kalau levelnya sama2 REAL (atau sama2 FAKE/PENDING),
+      // baru yg paling baru (barsAgo terkecil) yg dipakai.
       if(!best){ best = cand; continue; }
-      const bestResolved = best.verdict !== "PENDING";
-      const candResolved = cand.verdict !== "PENDING";
-      if(candResolved && !bestResolved) best = cand;              // resolved selalu menang vs pending
-      else if(candResolved === bestResolved && cand.barsAgo < best.barsAgo) best = cand; // sama2 resolved/pending -> ambil yg paling baru
+      const rank = v => v==="REAL" ? 0 : v==="FAKE" ? 1 : 2; // makin kecil makin diprioritaskan
+      const rBest = rank(best.verdict), rCand = rank(cand.verdict);
+      if(rCand < rBest) best = cand;
+      else if(rCand === rBest && cand.barsAgo < best.barsAgo) best = cand;
     }
   }
-  return best;
+  if(!best) return null;
+  // "latest" cuma disertakan kalau BEDA dgn best (levelnya beda) — biar chart bisa gambar
+  // penanda tambahan (mis. FAKE di candle berjalan) TANPA menggantikan status utama (REAL).
+  const latestDiffers = latest && (latest.level!==best.level || latest.type!==best.type || latest.barsAgo!==best.barsAgo);
+  return Object.assign({}, best, { latest: latestDiffers ? latest : null });
 }
 
 /* ============================================================
@@ -1095,6 +1103,11 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5){
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
     indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
+    // penanda tambahan: sweep PALING BARU apapun hasilnya (mis. FAKE di candle berjalan),
+    // ditampilkan berdampingan TANPA menggantikan status utama indM5Verdict di atas (REAL tetap dipertahankan)
+    indM5LatestLevel: indM5 && indM5.latest ? indM5.latest.level : null,
+    indM5LatestVerdict: indM5 && indM5.latest ? indM5.latest.verdict : null,
+    indM5LatestBarsAgo: indM5 && indM5.latest ? indM5.latest.barsAgo : null,
     ob: obEarly,
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
@@ -1697,13 +1710,15 @@ function renderSmcMiniChart(r, chartKey){
   const showStructHigh = within(r.structM5High);
   const showStructLow  = within(r.structM5Low);
   const showInd         = within(r.indM5Level);
+  const showIndLatest   = within(r.indM5LatestLevel);
 
   const allVals = baseVals.concat(
     showBsl? [r.bslZone.top, r.bslZone.bottom]:[], showSsl? [r.sslZone.top, r.sslZone.bottom]:[],
     showPoi? [r.ob.zoneTop, r.ob.zoneBottom]:[],
     showTp? [r.takeProfit]:[], showSl? [r.stopLoss]:[],
     showStructHigh? [r.structM5High]:[], showStructLow? [r.structM5Low]:[],
-    showInd? [r.indM5Level]:[]
+    showInd? [r.indM5Level]:[],
+    showIndLatest? [r.indM5LatestLevel]:[]
   );
   let lo = Math.min(...allVals), hi = Math.max(...allVals);
   const span = (hi-lo) || 1;
@@ -1744,6 +1759,18 @@ function renderSmcMiniChart(r, chartKey){
       const sweepIdx = (n-1) - r.indM5BarsAgo;
       const cx = sweepIdx*cw + cw/2;
       svgParts.push(`<circle cx="${cx}" cy="${yy}" r="3.5" fill="none" stroke="${col}" stroke-width="1.2"/>`);
+    }
+  }
+  // penanda TAMBAHAN: sweep paling baru di candle berjalan (mis. FAKE/PENDING) — cuma titik kecil
+  // redup, TIDAK menggantikan/menghapus label IND utama di atas (yg REAL-nya tetap dipertahankan)
+  if(showIndLatest){
+    const yy2=y(r.indM5LatestLevel);
+    const col2 = r.indM5LatestVerdict==="FAKE" ? "#f0b90b" : "#8b949e";
+    if(r.indM5LatestBarsAgo!==null && r.indM5LatestBarsAgo!==undefined && r.indM5LatestBarsAgo < n){
+      const sweepIdx2 = (n-1) - r.indM5LatestBarsAgo;
+      const cx2 = sweepIdx2*cw + cw/2;
+      svgParts.push(`<circle cx="${cx2}" cy="${yy2}" r="3" fill="none" stroke="${col2}" stroke-width="1" stroke-dasharray="1,1.5" opacity="0.8"/>`);
+      svgParts.push(`<text x="${cx2}" y="${yy2-6}" text-anchor="middle" fill="${col2}" font-family="ui-monospace,monospace" font-size="7.5" opacity="0.85">(${r.indM5LatestVerdict||"?"})</text>`);
     }
   }
 
