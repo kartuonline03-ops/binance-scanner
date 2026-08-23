@@ -223,7 +223,7 @@
     <span class="dot" id="liveDot"></span>
     <div>
       <h1>Binance Signal Scanner</h1>
-      <div class="sub" id="headerSub">Pilih strategi (SMC / SND) lalu mulai scan — belum jalan</div>
+      <div class="sub" id="headerSub">Tab SMC & SND cuma ganti tampilan — keduanya di-scan paralel begitu ditekan Mulai</div>
     </div>
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
@@ -615,8 +615,9 @@ function startPolling(){
     for(let i=0;i<POLL_BATCH_SIZE && i<n;i++){
       const item = S.symbols[pollIndex % n];
       pollIndex++;
-      if(STRATEGY_MODE==="SMC") await pollSmcSymbolOnce(item, doHtf);
-      else await pollSndSymbolOnce(item, doHtf);
+      // Polling paralel: kedua mode tetap diupdate walau yg tampil cuma salah satu.
+      await pollSmcSymbolOnce(item, doHtf);
+      await pollSndSymbolOnce(item, doHtf);
     }
     render();
   }, POLL_INTERVAL_MS);
@@ -635,9 +636,7 @@ function switchToPollingFallback(){
   const pill = document.getElementById("wsPill");
   pill.textContent = "MODE: POLLING";
   pill.className = "status-pill poll";
-  document.getElementById("headerSub").textContent = STRATEGY_MODE==="SMC"
-    ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5 | fallback polling REST aktif`
-    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode}) | fallback polling REST aktif`;
+  updateHeaderSub();
   startPolling();
 }
 
@@ -1471,22 +1470,21 @@ function openWsConnection(connId, streamNames, symbolLookup){
         const tradeSymbol = data.s;
         const streamInterval = k.i;
         const display = symbolLookup[tradeSymbol] || tradeSymbol;
-        if(STRATEGY_MODE==="SMC"){
-          const tfKey = Object.keys(SMC_TF).find(k2 => SMC_TF[k2]===streamInterval);
-          if(!tfKey) return;
-          const list = S.smcCandles[tfKey][tradeSymbol] || (S.smcCandles[tfKey][tradeSymbol]=[]);
-          if(tfKey===SMC_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
-          const closed = applyKlineUpdate(list, k, SMC_LIMIT[tfKey]);
+        // Update KEDUA mode sekaligus (scan paralel) — tab strategi cuma ganti tampilan.
+        const smcTfKey = Object.keys(SMC_TF).find(k2 => SMC_TF[k2]===streamInterval);
+        if(smcTfKey){
+          const list = S.smcCandles[smcTfKey][tradeSymbol] || (S.smcCandles[smcTfKey][tradeSymbol]=[]);
+          if(smcTfKey===SMC_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
+          const closed = applyKlineUpdate(list, k, SMC_LIMIT[smcTfKey]);
           if(closed) recomputeSmc(tradeSymbol, display);
-          return;
         }
-        // mode SND
-        const tfKey = Object.keys(SND_TF).find(k2 => SND_TF[k2]===streamInterval);
-        if(!tfKey) return;
-        const list = S.sndCandles[tfKey][tradeSymbol] || (S.sndCandles[tfKey][tradeSymbol]=[]);
-        if(tfKey===SND_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
-        const closed = applyKlineUpdate(list, k, SND_LIMIT[tfKey]);
-        if(closed) recomputeSnd(tradeSymbol, display);
+        const sndTfKey = Object.keys(SND_TF).find(k2 => SND_TF[k2]===streamInterval);
+        if(sndTfKey){
+          const list = S.sndCandles[sndTfKey][tradeSymbol] || (S.sndCandles[sndTfKey][tradeSymbol]=[]);
+          if(sndTfKey===SND_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
+          const closed = applyKlineUpdate(list, k, SND_LIMIT[sndTfKey]);
+          if(closed) recomputeSnd(tradeSymbol, display);
+        }
       }catch(e){ log(`Error proses pesan WS: ${e}`, "err"); }
     };
     ws.onerror = (e) => { log(`WS error (conn #${connId})`, "err"); };
@@ -2293,9 +2291,7 @@ async function startScan(){
   document.getElementById("liveDot").classList.add("live");
   document.getElementById("wsPill").textContent = "WS: CONNECTING";
   document.getElementById("wsPill").className = "status-pill";
-  document.getElementById("headerSub").textContent = CFG.strategyMode==="SMC"
-    ? `Strategi: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5`
-    : `Strategi: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
+  updateHeaderSub();
 
   S.symbols=[]; S.livePrice={}; S.sockets=[]; S.connectStart={};
   S.smcCandles={ d1:{}, h4:{}, h1:{}, m5:{} }; S.smcResults={};
@@ -2321,28 +2317,29 @@ async function startScan(){
   if(!S.symbols.length){ log("Tidak ada coin yang lolos filter.", "warn"); stopScan(); return; }
 
   const symbolLookup = {};
-  const isSmc = CFG.strategyMode==="SMC";
-  log(isSmc
-    ? `Mengambil riwayat candle awal (D1, H4, H1, M5) untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`
-    : `Mengambil riwayat candle awal (D1, H4, H1, M5, M1) untuk ${S.symbols.length} coin (sekali saja, lewat REST)...`);
+  // MODE PARALEL: kedua strategi (SND & SMC) selalu di-scan bersamaan.
+  // Tab strategi di atas cuma ganti TAMPILAN hasil, bukan pemicu scan ulang.
+  log(`Mengambil riwayat candle awal (D1, H4, H1, M5, M1) untuk ${S.symbols.length} coin — SND & SMC sekaligus (sekali saja, lewat REST)...`);
   let ok=0;
   for(let i=0;i<S.symbols.length;i++){
     if(!RUNNING) return;
     const item = S.symbols[i];
     symbolLookup[item.tradeSymbol.toUpperCase()] = item.display;
     try{
-      if(isSmc){
-        S.smcCandles.d1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.d1, SMC_LIMIT.d1);
-        S.smcCandles.h4[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.h4, SMC_LIMIT.h4);
-        S.smcCandles.h1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.h1, SMC_LIMIT.h1);
-        S.smcCandles.m5[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SMC_TF.m5, SMC_LIMIT.m5);
-      }else{
-        S.sndCandles.d1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.d1, SND_LIMIT.d1);
-        S.sndCandles.h4[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.h4, SND_LIMIT.h4);
-        S.sndCandles.h1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.h1, SND_LIMIT.h1);
-        S.sndCandles.m5[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.m5, SND_LIMIT.m5);
-        S.sndCandles.m1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.m1, SND_LIMIT.m1);
-      }
+      // d1/h4/h1/m5 pakai interval yg sama persis di kedua mode -> fetch sekali, isi ke dua-duanya
+      const rowsD1 = await fetchHistory(item.tradeSymbol, SMC_TF.d1, Math.max(SMC_LIMIT.d1, SND_LIMIT.d1));
+      const rowsH4 = await fetchHistory(item.tradeSymbol, SMC_TF.h4, Math.max(SMC_LIMIT.h4, SND_LIMIT.h4));
+      const rowsH1 = await fetchHistory(item.tradeSymbol, SMC_TF.h1, Math.max(SMC_LIMIT.h1, SND_LIMIT.h1));
+      const rowsM5 = await fetchHistory(item.tradeSymbol, SMC_TF.m5, Math.max(SMC_LIMIT.m5, SND_LIMIT.m5));
+      S.smcCandles.d1[item.tradeSymbol] = rowsD1.slice(-SMC_LIMIT.d1);
+      S.smcCandles.h4[item.tradeSymbol] = rowsH4.slice(-SMC_LIMIT.h4);
+      S.smcCandles.h1[item.tradeSymbol] = rowsH1.slice(-SMC_LIMIT.h1);
+      S.smcCandles.m5[item.tradeSymbol] = rowsM5.slice(-SMC_LIMIT.m5);
+      S.sndCandles.d1[item.tradeSymbol] = rowsD1.slice(-SND_LIMIT.d1);
+      S.sndCandles.h4[item.tradeSymbol] = rowsH4.slice(-SND_LIMIT.h4);
+      S.sndCandles.h1[item.tradeSymbol] = rowsH1.slice(-SND_LIMIT.h1);
+      S.sndCandles.m5[item.tradeSymbol] = rowsM5.slice(-SND_LIMIT.m5);
+      S.sndCandles.m1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.m1, SND_LIMIT.m1);
       ok++;
     }catch(e){
       log(`Gagal ambil riwayat ${item.display}: ${e}`, "err");
@@ -2353,10 +2350,9 @@ async function startScan(){
   }
   log(`Riwayat awal siap untuk ${ok}/${S.symbols.length} coin.`, "ok");
 
-  if(isSmc){
-    for(const item of S.symbols) recomputeSmc(item.tradeSymbol, item.display);
-  }else{
-    for(const item of S.symbols) recomputeSnd(item.tradeSymbol, item.display);
+  for(const item of S.symbols){
+    recomputeSmc(item.tradeSymbol, item.display);
+    recomputeSnd(item.tradeSymbol, item.display);
   }
   S.baselineDone = true;
   render();
@@ -2364,11 +2360,8 @@ async function startScan(){
   const streamNames = [];
   for(const item of S.symbols){
     const low = item.tradeSymbol.toLowerCase();
-    if(isSmc){
-      streamNames.push(`${low}@kline_${SMC_TF.d1}`, `${low}@kline_${SMC_TF.h4}`, `${low}@kline_${SMC_TF.h1}`, `${low}@kline_${SMC_TF.m5}`);
-    }else{
-      streamNames.push(`${low}@kline_${SND_TF.d1}`, `${low}@kline_${SND_TF.h4}`, `${low}@kline_${SND_TF.h1}`, `${low}@kline_${SND_TF.m5}`, `${low}@kline_${SND_TF.m1}`);
-    }
+    // d1/h4/h1/m5 sama utk kedua mode -> 1 stream cukup; m1 tambahan khusus SND
+    streamNames.push(`${low}@kline_${SMC_TF.d1}`, `${low}@kline_${SMC_TF.h4}`, `${low}@kline_${SMC_TF.h1}`, `${low}@kline_${SMC_TF.m5}`, `${low}@kline_${SND_TF.m1}`);
   }
   const chunks = chunk(streamNames, STREAMS_PER_CONNECTION);
   chunks.forEach((c, idx) => openWsConnection(idx+1, c, symbolLookup));
@@ -2395,8 +2388,8 @@ function stopScan(){
   document.getElementById("wsPill").textContent = "WS: OFF";
   document.getElementById("wsPill").className = "status-pill off";
   document.getElementById("headerSub").textContent = STRATEGY_MODE==="SMC"
-    ? "Analisa SMC Multi-TF (D1→H4→H1→M5) — dihentikan"
-    : "Analisa SND Supply/Demand (D1→H4→H1→M5/M1) — dihentikan";
+    ? "Tampilan: SMC Multi-TF — scan dihentikan"
+    : "Tampilan: SND Supply/Demand — scan dihentikan";
   log("Dihentikan.", "warn");
 }
 
@@ -2429,10 +2422,23 @@ function setStrategyMode(mode){
   document.getElementById("titleSell").textContent = titles.sell;
   document.getElementById("titleOngoing").textContent = titles.ongoing;
   document.getElementById("titleAnalisa").textContent = titles.analisa;
+  if(RUNNING) updateHeaderSub();
   render();
 }
-document.getElementById("tabStratSnd").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("SND"); saveSettings(); } });
-document.getElementById("tabStratSmc").addEventListener("click", ()=>{ if(!RUNNING){ setStrategyMode("SMC"); saveSettings(); } });
+
+// Satu fungsi terpusat buat teks status header, dipakai di semua tempat
+// supaya selalu konsisten menyebut bahwa SND & SMC jalan paralel.
+function updateHeaderSub(){
+  const pollTxt = S.pollingMode ? " | fallback polling REST aktif" : "";
+  const base = STRATEGY_MODE==="SMC"
+    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5`
+    : `Strategi ditampilkan: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
+  document.getElementById("headerSub").textContent = `${base} | (scan SND+SMC paralel)${pollTxt}`;
+}
+// Tab strategi boleh diklik kapan saja (bahkan saat RUNNING) — cuma ganti tampilan,
+// scan SND & SMC tetap jalan paralel di background.
+document.getElementById("tabStratSnd").addEventListener("click", ()=>{ setStrategyMode("SND"); saveSettings(); });
+document.getElementById("tabStratSmc").addEventListener("click", ()=>{ setStrategyMode("SMC"); saveSettings(); });
 
 function getCheckedSet(){
   return new Set(Array.from(document.querySelectorAll("#coinChecklist input[type=checkbox]:checked")).map(cb=>cb.value));
