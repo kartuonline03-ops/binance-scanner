@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 22.30 - 22/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 08.17 - 23/8/2026</div>
   </div>
 </header>
 
@@ -413,6 +413,8 @@ const S = {
   pollingMode: false, wsZeroStrikes: 0,
   openDetails: new Set(),        // simpan simbol kartu yg "detail alasan"-nya lagi dibuka, biar gak ke-reset tiap render ulang
   chartScroll: {},               // chartKey (kind|symbol) -> scrollLeft terakhir, biar mini chart gak snap balik ke kanan tiap refresh
+  chartBusyUntil: 0,             // timestamp: selama Date.now() < ini, render() ditunda (user lagi geser/pinch chart)
+  renderRetryTimer: null,
   chartZoom: {},                 // chartKey -> level zoom mini chart (1 = normal), biar bisa diperbesar/dikecilkan per kartu
   // --- state khusus mode SMC Multi-TF ---
   smcCandles: { d1:{}, h4:{}, h1:{}, m5:{} },  // tf -> tradeSymbol -> [candle]
@@ -1511,6 +1513,13 @@ document.addEventListener("visibilitychange", ()=>{
 /* ============================================================
    RENDER
    ============================================================ */
+// Dipanggil dari listener scroll/touch di mini chart: menandai "lagi dipegang user"
+// selama beberapa saat, biar render() tidak membongkar DOM chart di tengah gesture
+// (itu penyebab chart "kayak mau balik sendiri" pas digeser).
+function markChartBusy(ms){
+  S.chartBusyUntil = Date.now() + (ms || 900);
+}
+
 function scheduleRedraw(){
   if(redrawTimer) return;
   redrawTimer = setTimeout(()=>{ redrawTimer=null; render(); }, 400);
@@ -1545,7 +1554,7 @@ function buildChartZoomControls(chartKey){
     const cur = S.chartZoom[chartKey] || 1;
     S.chartZoom[chartKey] = Math.max(CHART_ZOOM_MIN, +(cur - CHART_ZOOM_STEP).toFixed(2));
     delete S.chartScroll[chartKey];
-    render();
+    render(true);
   }));
   const countLabel = document.createElement("span");
   countLabel.textContent = `${visibleN} candle`;
@@ -1555,12 +1564,12 @@ function buildChartZoomControls(chartKey){
     const cur = S.chartZoom[chartKey] || 1;
     S.chartZoom[chartKey] = Math.min(CHART_ZOOM_MAX, +(cur + CHART_ZOOM_STEP).toFixed(2));
     delete S.chartScroll[chartKey];
-    render();
+    render(true);
   }));
   bar.appendChild(mkBtn("⟲", "Reset ke tampilan default", ()=>{
     S.chartZoom[chartKey] = 1;
     delete S.chartScroll[chartKey];
-    render();
+    render(true);
   }));
   return bar;
 }
@@ -1583,7 +1592,7 @@ function attachPinchZoom(scrollArea, chartKey){
       if(Math.abs(next - (S.chartZoom[chartKey]||1)) >= 0.05){
         S.chartZoom[chartKey] = next;
         delete S.chartScroll[chartKey];
-        render();
+        render(true);
       }
     }
   }, {passive:false});
@@ -1758,9 +1767,15 @@ function renderSmcMiniChart(r, chartKey){
   axisArea.innerHTML = axisSvg.join("");
   container.appendChild(axisArea);
 
+  // Selama user nyentuh/geser/scroll chart ini, tandai "busy" biar render() gak
+  // bongkar ulang DOM-nya di tengah gesture (penyebab chart "kayak balik sendiri").
+  scrollArea.addEventListener("touchstart", ()=>{ markChartBusy(); }, {passive:true});
+  scrollArea.addEventListener("pointerdown", ()=>{ markChartBusy(); });
   scrollArea.addEventListener("scroll", ()=>{
     S.chartScroll[chartKey] = scrollArea.scrollLeft;
+    markChartBusy(); // scroll/momentum masih jalan -> perpanjang jendela busy
   });
+  scrollArea.addEventListener("touchend", ()=>{ markChartBusy(500); }, {passive:true}); // kasih waktu utk momentum scroll settle
   attachPinchZoom(scrollArea, chartKey);
 
   requestAnimationFrame(()=>{
@@ -1892,9 +1907,15 @@ function renderSndMiniChart(r, chartKey){
   axisArea.innerHTML = axisSvg.join("");
   container.appendChild(axisArea);
 
+  // Selama user nyentuh/geser/scroll chart ini, tandai "busy" biar render() gak
+  // bongkar ulang DOM-nya di tengah gesture (penyebab chart "kayak balik sendiri").
+  scrollArea.addEventListener("touchstart", ()=>{ markChartBusy(); }, {passive:true});
+  scrollArea.addEventListener("pointerdown", ()=>{ markChartBusy(); });
   scrollArea.addEventListener("scroll", ()=>{
     S.chartScroll[chartKey] = scrollArea.scrollLeft;
+    markChartBusy(); // scroll/momentum masih jalan -> perpanjang jendela busy
   });
+  scrollArea.addEventListener("touchend", ()=>{ markChartBusy(500); }, {passive:true}); // kasih waktu utk momentum scroll settle
   attachPinchZoom(scrollArea, chartKey);
 
   requestAnimationFrame(()=>{
@@ -2089,7 +2110,17 @@ function buildSndCard(r, kind){
   return div;
 }
 
-function render(){
+function render(force){
+  if(!force && Date.now() < S.chartBusyUntil){
+    // Ada chart yg lagi digeser/pinch user -> jangan bongkar DOM kartu dulu (bikin scroll "kedip balik").
+    // Cukup update angka status ringan yg gak nyentuh DOM chart, lalu jadwalkan render penuh setelah selesai.
+    document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
+    document.getElementById("stMsgCount").textContent = S.msgCount;
+    if(!S.renderRetryTimer){
+      S.renderRetryTimer = setTimeout(()=>{ S.renderRetryTimer=null; render(); }, 250);
+    }
+    return;
+  }
   if(STRATEGY_MODE==="SMC") renderSmc(); else renderSnd();
 
   document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
