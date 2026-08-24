@@ -1753,6 +1753,31 @@ function attachPinchZoom(scrollArea, chartKey){
    MINI CHART SVG UTK KARTU SMC MULTI-TF.
    Fokus: candle M5 + area BSL/SSL + zona Order Block (POI) + TP/SL.
    ============================================================ */
+// Pulihkan posisi scroll mini chart ke posisi terakhir user (S.chartScroll[chartKey]).
+// PENTING: kalau elemen baru saja di-attach & belum sempat di-layout browser (mis. kartu ini
+// ada di tab yg sedang TIDAK aktif / display:none, atau frame render belum settle),
+// scrollWidth/clientWidth bisa kebaca 0 -> maxScroll jadi 0/negatif -> scrollLeft KEPAKSA ke 0
+// (balik ke kiri) walau ada nilai "saved" yg valid. Makanya di sini kita RETRY beberapa kali
+// via requestAnimationFrame sampai elemen benar2 punya lebar (atau retry habis), alih2 langsung
+// memaksa clamp ke 0 saat lebar belum siap.
+function restoreChartScroll(scrollArea, chartKey, triesLeft){
+  if(triesLeft === undefined) triesLeft = 6;
+  requestAnimationFrame(()=>{
+    const w = scrollArea.clientWidth;
+    if(w === 0 && triesLeft > 0){
+      // belum ke-layout (kemungkinan besar tab/kartu masih tersembunyi) -> jangan paksa 0 dulu,
+      // coba lagi frame berikutnya. Kalau memang tetap tersembunyi sampai retry habis, biarkan
+      // browser pakai default-nya; posisi tersimpan TIDAK dihapus jadi tetap kepakai begitu kartu
+      // ini kelihatan lagi (mis. pindah tab) di render berikutnya.
+      restoreChartScroll(scrollArea, chartKey, triesLeft-1);
+      return;
+    }
+    const saved = S.chartScroll[chartKey];
+    const maxScroll = Math.max(0, scrollArea.scrollWidth - scrollArea.clientWidth);
+    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
+  });
+}
+
 function renderSmcMiniChart(r, chartKey){
   const allCandles = r.miniCandles;
   if(!allCandles || allCandles.length<5) return null;
@@ -1971,12 +1996,7 @@ function renderSmcMiniChart(r, chartKey){
   });
   scrollArea.addEventListener("touchend", ()=>{ markChartBusy(500); }, {passive:true}); // kasih waktu utk momentum scroll settle
   attachPinchZoom(scrollArea, chartKey);
-
-  requestAnimationFrame(()=>{
-    const saved = S.chartScroll[chartKey];
-    const maxScroll = scrollArea.scrollWidth - scrollArea.clientWidth;
-    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
-  });
+  restoreChartScroll(scrollArea, chartKey);
 
   const wrap = document.createElement("div");
   wrap.appendChild(container);
@@ -2125,12 +2145,7 @@ function renderSndMiniChart(r, chartKey){
   });
   scrollArea.addEventListener("touchend", ()=>{ markChartBusy(500); }, {passive:true}); // kasih waktu utk momentum scroll settle
   attachPinchZoom(scrollArea, chartKey);
-
-  requestAnimationFrame(()=>{
-    const saved = S.chartScroll[chartKey];
-    const maxScroll = scrollArea.scrollWidth - scrollArea.clientWidth;
-    scrollArea.scrollLeft = (saved!==undefined && saved!==null) ? Math.min(saved, maxScroll) : scrollArea.scrollWidth;
-  });
+  restoreChartScroll(scrollArea, chartKey);
 
   const wrap = document.createElement("div");
   wrap.appendChild(container);
@@ -2319,19 +2334,10 @@ function buildSndCard(r, kind){
   return div;
 }
 
-function render(force){
-  if(!force && Date.now() < S.chartBusyUntil){
-    // Ada chart yg lagi digeser/pinch user -> jangan bongkar DOM kartu dulu (bikin scroll "kedip balik").
-    // Cukup update angka status ringan yg gak nyentuh DOM chart, lalu jadwalkan render penuh setelah selesai.
-    document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
-    document.getElementById("stMsgCount").textContent = S.msgCount;
-    if(!S.renderRetryTimer){
-      S.renderRetryTimer = setTimeout(()=>{ S.renderRetryTimer=null; render(); }, 250);
-    }
-    return;
-  }
-  if(STRATEGY_MODE==="SMC") renderSmc(); else renderSnd();
-
+// Update angka2 status (progress, msg count, age, dst) TANPA menyentuh DOM kartu/mini-chart.
+// Dipisah dari render() supaya tick timer ringan (mis. update "X detik lalu" tiap 2 detik)
+// gak perlu bongkar-pasang ulang seluruh chart cuma buat update angka.
+function updateStatsOnly(){
   document.getElementById("stProgress").textContent = `${S.analyzed} / ${S.symbols.length}`;
   document.getElementById("stMsgCount").textContent = S.msgCount;
   const age = S.lastMsgTime ? ((Date.now()-S.lastMsgTime)/1000).toFixed(0)+"s lalu" : "-";
@@ -2340,6 +2346,20 @@ function render(force){
   document.getElementById("stCloseCount").textContent = S.closeEventCount;
   document.getElementById("stConnCount").textContent = `${S.connCount} / ${S.disconnCount}`;
   document.getElementById("stLastClose").textContent = S.lastCloseInfo;
+}
+
+function render(force){
+  if(!force && Date.now() < S.chartBusyUntil){
+    // Ada chart yg lagi digeser/pinch user -> jangan bongkar DOM kartu dulu (bikin scroll "kedip balik").
+    // Cukup update angka status ringan yg gak nyentuh DOM chart, lalu jadwalkan render penuh setelah selesai.
+    updateStatsOnly();
+    if(!S.renderRetryTimer){
+      S.renderRetryTimer = setTimeout(()=>{ S.renderRetryTimer=null; render(); }, 250);
+    }
+    return;
+  }
+  if(STRATEGY_MODE==="SMC") renderSmc(); else renderSnd();
+  updateStatsOnly();
 }
 
 function renderSnd(){
@@ -2530,7 +2550,13 @@ async function startScan(){
   log(`WebSocket aktif (${chunks.length} koneksi, ${streamNames.length} stream).`, "ok");
 
   redrawTimer = setInterval === undefined ? null : redrawTimer;
-  setInterval(()=>{ if(RUNNING) render(); }, 2000);
+  // Tick ringan tiap 2 detik: HANYA update angka status ("X detik lalu", counter, dst),
+  // JANGAN panggil render() penuh di sini -> render() penuh bongkar-ulang semua DOM
+  // kartu+mini-chart (fillList -> el.innerHTML=""), yg bikin posisi scroll mini chart
+  // "kedip" balik ke kiri tiap 2 detik walau sudah ada penyimpanan posisi (S.chartScroll).
+  // Render penuh cukup dipicu oleh event data asli (poll tick / pesan WS baru / hasil scan),
+  // bukan oleh timer kosmetik ini.
+  setInterval(()=>{ if(RUNNING) updateStatsOnly(); }, 2000);
 }
 
 function stopScan(){
