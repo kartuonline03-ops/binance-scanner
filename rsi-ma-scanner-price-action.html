@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 07.46 - 24/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 11.21 - 24/8/2026</div>
   </div>
 </header>
 
@@ -2167,7 +2167,7 @@ function buildSmcCard(r, kind){
     div.appendChild(note);
   }
 
-  const miniChart = renderSmcMiniChart(r, kind + "|smc|" + r.symbol);
+  const miniChart = renderSmcMiniChart(r, "smc|" + r.symbol);
   if(miniChart) div.appendChild(miniChart);
 
   if(r.reasons && r.reasons.length){
@@ -2253,7 +2253,7 @@ function buildSndCard(r, kind){
     div.appendChild(note);
   }
 
-  const miniChart = renderSndMiniChart(r, kind + "|snd|" + r.symbol);
+  const miniChart = renderSndMiniChart(r, "snd|" + r.symbol);
   if(miniChart) div.appendChild(miniChart);
 
   if(r.reasons && r.reasons.length){
@@ -2310,15 +2310,13 @@ function renderSnd(){
     ...waiting.map(r=>"ongoing|"+r.symbol),
     ...noSetup.map(r=>"analisa|"+r.symbol),
   ]);
-  const validChartKeys = new Set([
-    ...buys.map(r=>"buy|snd|"+r.symbol),
-    ...sells.map(r=>"sell|snd|"+r.symbol),
-    ...waiting.map(r=>"ongoing|snd|"+r.symbol),
-    ...noSetup.map(r=>"analisa|snd|"+r.symbol),
-  ]);
+  // chartKey mini-chart TIDAK lagi ikut "kind" (kategori) — cuma per simbol — biar posisi
+  // scroll/zoom-nya TETAP kebawa walau status simbol pindah kategori (mis. NO_SETUP -> TUNGGU),
+  // yg sebelumnya bikin chart "balik sendiri" krn dianggap chart yg beda tiap kategori berubah.
+  const validChartKeys = new Set(results.map(r=>"snd|"+r.symbol));
   for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
-  for(const k of Object.keys(S.chartScroll)){ if(k.includes("|snd|") && !validChartKeys.has(k)) delete S.chartScroll[k]; }
-  for(const k of Object.keys(S.chartZoom)){ if(k.includes("|snd|") && !validChartKeys.has(k)) delete S.chartZoom[k]; }
+  for(const k of Object.keys(S.chartScroll)){ if(k.startsWith("snd|") && !validChartKeys.has(k)) delete S.chartScroll[k]; }
+  for(const k of Object.keys(S.chartZoom)){ if(k.startsWith("snd|") && !validChartKeys.has(k)) delete S.chartZoom[k]; }
 
   document.getElementById("cntBuy").textContent = buys.length;
   document.getElementById("cntSell").textContent = sells.length;
@@ -2344,15 +2342,13 @@ function renderSmc(){
     ...waiting.map(r=>"ongoing|"+r.symbol),
     ...noSetup.map(r=>"analisa|"+r.symbol),
   ]);
-  const validChartKeys = new Set([
-    ...buys.map(r=>"buy|smc|"+r.symbol),
-    ...sells.map(r=>"sell|smc|"+r.symbol),
-    ...waiting.map(r=>"ongoing|smc|"+r.symbol),
-    ...noSetup.map(r=>"analisa|smc|"+r.symbol),
-  ]);
+  // chartKey mini-chart TIDAK lagi ikut "kind" (kategori) — cuma per simbol — biar posisi
+  // scroll/zoom-nya TETAP kebawa walau status simbol pindah kategori (mis. NO_SETUP -> TUNGGU),
+  // yg sebelumnya bikin chart "balik sendiri" krn dianggap chart yg beda tiap kategori berubah.
+  const validChartKeys = new Set(results.map(r=>"smc|"+r.symbol));
   for(const k of S.openDetails){ if(!validKeys.has(k)) S.openDetails.delete(k); }
-  for(const k of Object.keys(S.chartScroll)){ if(k.includes("|smc|") && !validChartKeys.has(k)) delete S.chartScroll[k]; }
-  for(const k of Object.keys(S.chartZoom)){ if(k.includes("|smc|") && !validChartKeys.has(k)) delete S.chartZoom[k]; }
+  for(const k of Object.keys(S.chartScroll)){ if(k.startsWith("smc|") && !validChartKeys.has(k)) delete S.chartScroll[k]; }
+  for(const k of Object.keys(S.chartZoom)){ if(k.startsWith("smc|") && !validChartKeys.has(k)) delete S.chartZoom[k]; }
 
   document.getElementById("cntBuy").textContent = buys.length;
   document.getElementById("cntSell").textContent = sells.length;
