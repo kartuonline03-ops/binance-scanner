@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 11.21 - 24/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 12.51 - 24/8/2026</div>
   </div>
 </header>
 
@@ -1248,6 +1248,23 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   reasons.push(`Order Block M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
   reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+
+  // --- Laporan gap: harga live (candle M5 terakhir) vs level Entry (OB) ---
+  // Status ENTRY_BUY/SELL di atas muncul begitu OB+BOS ketemu, TANPA mengecek apakah
+  // harga sekarang sudah balik ke level Entry atau belum. Baris ini cuma laporan
+  // tertulis di detail alasan (bukan badge/indikator baru) biar kelihatan seberapa jauh
+  // harga live sudah "lari" dari level Entry -> user yg mutusin market entry atau nunggu retest.
+  const livePriceM5 = candlesM5[candlesM5.length-1].close;
+  const gapAbs = livePriceM5 - entry;
+  const gapPct = (gapAbs/entry)*100;
+  const sudahLewatEntry = mainDir==="BUY" ? gapAbs>0 : gapAbs<0;
+  if(Math.abs(gapPct) < 0.05){
+    reasons.push(`Harga live (${fmt(livePriceM5)}) masih PAS di level Entry -> siap dieksekusi langsung tanpa nunggu retest.`);
+  }else if(sudahLewatEntry){
+    reasons.push(`Harga live (${fmt(livePriceM5)}) sudah "lari" ${fmt(Math.abs(gapPct),2)}% dari level Entry (${fmt(entry)}) ke arah ${mainDir} -> kalau mau RR sesuai rencana, perlu tunggu retest ke level Entry; kalau market entry sekarang, RR bakal lebih kecil dari yg dihitung di atas.`);
+  }else{
+    reasons.push(`Harga live (${fmt(livePriceM5)}) malah ${fmt(Math.abs(gapPct),2)}% di SISI BERLAWANAN dari level Entry (${fmt(entry)}) -> harga sudah "kebablasan" balik ke arah OB, entry di level ini lebih dekat/mudah kena kalau limit order.`);
+  }
 
   return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
