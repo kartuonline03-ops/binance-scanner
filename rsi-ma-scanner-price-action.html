@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 12.51 - 24/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18.37 - 24/8/2026</div>
   </div>
 </header>
 
@@ -1887,22 +1887,36 @@ function renderSmcMiniChart(r, chartKey){
     svgParts.push(`<line x1="0" y1="${yOpt}" x2="${chartW}" y2="${yOpt}" stroke="${col}" stroke-width="1" stroke-dasharray="1,3" opacity="0.9"/>`);
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yOpt-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="8.5">Optimal Entry</text>`);
   }
-  // Target (TP) & Stop (SL)
-  if(showTp || showSl){
+  // Target (TP) & Stop (SL). TP dari swing H1/H4 sering JAUH di luar rentang candle M5 yg
+  // ditampilkan -> kalau gitu, jangan disembunyikan begitu aja: gambar panah penunjuk arah +
+  // label di tepi chart, biar tetap kelihatan ada TP walau di luar area candle yg di-zoom.
+  const hasTp = r.takeProfit!==null && r.takeProfit!==undefined;
+  const hasSl = r.stopLoss!==null && r.stopLoss!==undefined;
+  if(showTp || showSl || hasTp || hasSl){
     const yEntry = y(r.entry!==null && r.entry!==undefined ? r.entry : r.price);
-    const rrTxt = (showTp && showSl && r.stopLoss!==r.entry)
+    const rrTxt = (hasTp && hasSl && r.stopLoss!==r.entry)
       ? ` (RR ${fmt(Math.abs(r.takeProfit-r.entry)/Math.abs(r.entry-r.stopLoss),2)})` : "";
     if(showTp){
       const yTp = y(r.takeProfit);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
       svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
+    }else if(hasTp){
+      const atTop = r.takeProfit > hi;
+      const yEdge = atTop ? padT+10 : H-padB-4;
+      const arrow = atTop ? "▲" : "▼";
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yEdge}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">${arrow} Target: ${fmt(r.takeProfit)} (di luar chart)</text>`);
     }
     if(showSl){
       const ySl = y(r.stopLoss);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
       svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
+    }else if(hasSl){
+      const atTop = r.stopLoss > hi;
+      const yEdge = atTop ? padT+10 : H-padB-4;
+      const arrow = atTop ? "▲" : "▼";
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yEdge}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">${arrow} Stop: ${fmt(r.stopLoss)} (di luar chart)</text>`);
     }
   }
 
@@ -2028,22 +2042,36 @@ function renderSndMiniChart(r, chartKey){
     svgParts.push(`<rect x="0" y="${yTop}" width="${chartW}" height="${Math.max(1,yBot-yTop)}" fill="none" stroke="${col}" stroke-width="1" opacity="0.85"/>`);
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTop-3}" fill="${col}" font-family="ui-monospace,monospace" font-size="9">SUPPLY (${r.supplyZone.baseCandleCount} base)</text>`);
   }
-  // Target (TP) & Stop (SL)
-  if(showTp || showSl){
+  // Target (TP) & Stop (SL). TP dari swing H1/H4 sering JAUH di luar rentang candle M5 yg
+  // ditampilkan -> kalau gitu, jangan disembunyikan begitu aja: gambar panah penunjuk arah +
+  // label di tepi chart, biar tetap kelihatan ada TP walau di luar area candle yg di-zoom.
+  const hasTp = r.takeProfit!==null && r.takeProfit!==undefined;
+  const hasSl = r.stopLoss!==null && r.stopLoss!==undefined;
+  if(showTp || showSl || hasTp || hasSl){
     const yEntry = y(r.entry!==null && r.entry!==undefined ? r.entry : r.price);
-    const rrTxt = (showTp && showSl && r.stopLoss!==r.entry)
+    const rrTxt = (hasTp && hasSl && r.stopLoss!==r.entry)
       ? ` (RR ${fmt(Math.abs(r.takeProfit-r.entry)/Math.abs(r.entry-r.stopLoss),2)})` : "";
     if(showTp){
       const yTp = y(r.takeProfit);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,yTp)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-yTp))}" fill="#4da3ff" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${yTp}" x2="${chartW}" y2="${yTp}" stroke="#4da3ff" stroke-width="1" stroke-dasharray="3,2"/>`);
       svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yTp-3}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">Target: ${fmt(r.takeProfit)}${rrTxt}</text>`);
+    }else if(hasTp){
+      const atTop = r.takeProfit > hi;
+      const yEdge = atTop ? padT+10 : H-padB-4;
+      const arrow = atTop ? "▲" : "▼";
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yEdge}" fill="#4da3ff" font-family="ui-monospace,monospace" font-size="9">${arrow} Target: ${fmt(r.takeProfit)} (di luar chart)</text>`);
     }
     if(showSl){
       const ySl = y(r.stopLoss);
       svgParts.push(`<rect x="0" y="${Math.min(yEntry,ySl)}" width="${chartW}" height="${Math.max(1,Math.abs(yEntry-ySl))}" fill="#f6465d" opacity="0.10"/>`);
       svgParts.push(`<line x1="0" y1="${ySl}" x2="${chartW}" y2="${ySl}" stroke="#f6465d" stroke-width="1" stroke-dasharray="3,2"/>`);
       svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${ySl+11}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">Stop: ${fmt(r.stopLoss)}</text>`);
+    }else if(hasSl){
+      const atTop = r.stopLoss > hi;
+      const yEdge = atTop ? padT+10 : H-padB-4;
+      const arrow = atTop ? "▲" : "▼";
+      svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yEdge}" fill="#f6465d" font-family="ui-monospace,monospace" font-size="9">${arrow} Stop: ${fmt(r.stopLoss)} (di luar chart)</text>`);
     }
   }
 
