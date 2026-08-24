@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 21.19 - 23/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 07.46 - 24/8/2026</div>
   </div>
 </header>
 
@@ -1007,12 +1007,13 @@ function detectOrderBlock(candles){
   else if(lastH.price<prevH.price && lastL.price<prevL.price) trend="BEARISH";
   if(!trend) return null;
 
-  // Cari impuls breakout paling BARU dalam STRUCT_LOOKBACK candle terakhir — TIDAK harus
-  // candle paling akhir. Ini penting: kalau harga rally kuat lalu koreksi/turun lagi, breakout-nya
-  // ada di tengah chart (bukan candle live sekarang), tapi OB dari situ TETAP relevan dipantau
-  // karena harga bisa "napak tilas" balik ke origin-nya kapan saja.
-  let breakoutDir = null, breakoutIdx = null;
+  // Cari kandidat breakout dari yg PALING BARU mundur ke belakang. Bedanya dgn sebelumnya:
+  // begitu ketemu breakout yg OB-nya MASIH FRESH (blm pernah diretest), LANGSUNG dipakai &
+  // berhenti nyari — supaya OB yg masih valid gak "kelempar" cuma gara2 ada breakout baru yg
+  // lebih baru tapi hasilnya malah OB yg sudah mitigated (kurang relevan). Kalau smp habis
+  // scan gak ada satupun yg fresh, baru pakai kandidat PALING BARU yg ketemu (fallback lama).
   const breakoutScanFrom = Math.max(1, n - STRUCT_LOOKBACK);
+  let firstCandidate = null;
   for(let i=n-1; i>=breakoutScanFrom; i--){
     const c = candles[i];
     const bi = candleBodyInfo(c);
@@ -1022,38 +1023,37 @@ function detectOrderBlock(candles){
     else if(trend==="BULLISH" && c.close<lastL.price) dir="SELL";
     else if(trend==="BEARISH" && c.close<lastL.price) dir="SELL";
     else if(trend==="BEARISH" && c.close>lastH.price) dir="BUY";
-    if(dir){ breakoutDir=dir; breakoutIdx=i; break; } // yg PALING BARU duluan (loop mundur dari now)
+    if(!dir) continue;
+
+    // cari candle Order Block: mundur dari SEBELUM candle breakout ini, ambil candle pertama
+    // yg warnanya BERLAWANAN dgn arah impuls (candle terakhir sblm "tenaga" impulsif keluar)
+    const scanStart = Math.max(0, i-OB_SCAN_BACK);
+    let obIdx = null;
+    for(let j=i-1; j>=scanStart; j--){
+      const cj = candles[j];
+      const bullish = cj.close>=cj.open;
+      if(dir==="BUY"  && !bullish){ obIdx=j; break; }
+      if(dir==="SELL" &&  bullish){ obIdx=j; break; }
+    }
+    if(obIdx===null) continue; // gak ketemu candle OB yg cocok utk breakout ini, coba breakout lbh lama
+
+    const ob = candles[obIdx];
+    const zoneTop = ob.high, zoneBottom = ob.low;
+    const bodyTop = Math.max(ob.open, ob.close), bodyBottom = Math.min(ob.open, ob.close);
+    const optimalEntry = (bodyTop+bodyBottom)/2;
+    let mitigated=false, mitigatedBarsAgo=null;
+    for(let k=obIdx+2; k<n; k++){
+      const ck=candles[k];
+      if(ck.low<=zoneTop && ck.high>=zoneBottom){ mitigated=true; mitigatedBarsAgo=(n-1-k); break; }
+    }
+    const candidate = {
+      direction:dir, zoneTop, zoneBottom, bodyTop, bodyBottom, optimalEntry,
+      barsAgo:(n-1-obIdx), mitigated, mitigatedBarsAgo,
+    };
+    if(!firstCandidate) firstCandidate = candidate; // simpan sbg fallback kalau smp akhir gak ada yg fresh
+    if(!mitigated) return candidate; // FRESH ketemu -> langsung pakai, gak usah cari yg lbh lama lagi
   }
-  if(!breakoutDir) return null;
-
-  // cari candle Order Block: mundur dari SEBELUM candle breakout, ambil candle pertama yg
-  // warnanya BERLAWANAN dgn arah impuls (itu candle terakhir sblm "tenaga" impulsif keluar)
-  const scanStart = Math.max(0, breakoutIdx-OB_SCAN_BACK);
-  let obIdx = null;
-  for(let i=breakoutIdx-1; i>=scanStart; i--){
-    const c = candles[i];
-    const bullish = c.close>=c.open;
-    if(breakoutDir==="BUY"  && !bullish){ obIdx=i; break; } // candle merah terakhir sblm impuls naik
-    if(breakoutDir==="SELL" &&  bullish){ obIdx=i; break; } // candle hijau terakhir sblm impuls turun
-  }
-  if(obIdx===null) return null;
-
-  const ob = candles[obIdx];
-  const zoneTop = ob.high, zoneBottom = ob.low;                       // POI: full range candle OB
-  const bodyTop = Math.max(ob.open, ob.close), bodyBottom = Math.min(ob.open, ob.close);
-  const optimalEntry = (bodyTop+bodyBottom)/2;                        // Optimal Entry Position (50% body OB)
-
-  // cek apakah harga SUDAH balik/retest ke zona OB stlh candle impuls (mitigated) atau masih fresh (blm disentuh)
-  let mitigated=false, mitigatedBarsAgo=null;
-  for(let i=obIdx+2; i<n; i++){
-    const c=candles[i];
-    if(c.low<=zoneTop && c.high>=zoneBottom){ mitigated=true; mitigatedBarsAgo=(n-1-i); break; }
-  }
-
-  return {
-    direction: breakoutDir, zoneTop, zoneBottom, bodyTop, bodyBottom, optimalEntry,
-    barsAgo:(n-1-obIdx), mitigated, mitigatedBarsAgo,
-  };
+  return firstCandidate; // gak ada yg fresh sepanjang jendela scan -> pakai yg paling baru (mitigated), atau null
 }
 
 /* ============================================================
