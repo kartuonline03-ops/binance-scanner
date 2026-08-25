@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 25/8/2026 10:43</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 25/8/2026 10:57</div>
   </div>
 </header>
 
@@ -2875,6 +2875,21 @@ document.getElementById("coinChecklist").addEventListener("change", (e)=>{
 });
 
 loadSettings();
+
+// Sesuai permintaan: TIDAK perlu pencet "Mulai Scan" lagi sama sekali — cukup buka/reload
+// halaman ini, scan otomatis langsung jalan pakai config terakhir yang tersimpan.
+// Tombol "Mulai Scan" / "Stop" tetap ada & tetap berfungsi kalau mau restart manual atau
+// menghentikan sementara, tapi buka halaman = otomatis mulai scan.
+function autoStartOnLoad(){
+  if(RUNNING) return;
+  if(SCAN_MODE === "CUSTOM" && !document.querySelectorAll("#coinChecklist input[type=checkbox]:checked").length){
+    log("Mode \"Scan Coin Tertentu\" aktif tapi belum ada coin yang dicentang — scan otomatis dilewati, silakan centang coin lalu tekan \"Mulai Scan\".", "warn");
+    return;
+  }
+  log("Halaman dibuka — scan otomatis dimulai tanpa perlu pencet \"Mulai Scan\"...", "ok");
+  startScan();
+}
+autoStartOnLoad();
 
 log("Siap. Atur konfigurasi lalu tekan \"Mulai Scan\".");
 })();
