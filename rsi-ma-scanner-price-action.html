@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18.37 - 24/8/2026</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18.38 - 25/8/2026</div>
   </div>
 </header>
 
@@ -1682,9 +1682,14 @@ function scheduleRedraw(){
    ============================================================ */
 const CHART_ZOOM_MIN = 0.35, CHART_ZOOM_MAX = 2.4, CHART_ZOOM_STEP = 0.3;
 const CHART_BASE_VISIBLE_CANDLES = 30; // jumlah candle yg tampil pas zoom 100%
+// Default zoom dipakai kalau chart ini BELUM pernah diatur user (belum ada di S.chartZoom).
+// CHART_ZOOM_MIN dipilih sebagai default krn menghasilkan tampilan ~86 candle
+// (round(30/0.35)=86) — biar setiap kali chart "reset"/baru pertama render, yg kelihatan
+// adalah candle TERBARU dgn jendela lebar (86 candle), bukan mepet-kanan zoom rapat.
+const DEFAULT_CHART_ZOOM = CHART_ZOOM_MIN;
 
 function buildChartZoomControls(chartKey){
-  const zoom = S.chartZoom[chartKey] || 1;
+  const zoom = S.chartZoom[chartKey] || DEFAULT_CHART_ZOOM;
   const visibleN = Math.max(8, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom));
   const bar = document.createElement("div");
   bar.style.cssText = "display:flex; justify-content:flex-end; align-items:center; gap:4px; margin-top:6px;";
@@ -1701,7 +1706,7 @@ function buildChartZoomControls(chartKey){
   };
 
   bar.appendChild(mkBtn("−", "Kecilkan candle -> tampilkan lebih banyak history", ()=>{
-    const cur = S.chartZoom[chartKey] || 1;
+    const cur = S.chartZoom[chartKey] || DEFAULT_CHART_ZOOM;
     S.chartZoom[chartKey] = Math.max(CHART_ZOOM_MIN, +(cur - CHART_ZOOM_STEP).toFixed(2));
     delete S.chartScroll[chartKey];
     render(true);
@@ -1711,7 +1716,7 @@ function buildChartZoomControls(chartKey){
   countLabel.style.cssText = "font-family:var(--mono); font-size:10px; color:#8b949e; padding:0 2px;";
   bar.appendChild(countLabel);
   bar.appendChild(mkBtn("+", "Besarkan candle -> tampilkan lebih sedikit, lebih detail", ()=>{
-    const cur = S.chartZoom[chartKey] || 1;
+    const cur = S.chartZoom[chartKey] || DEFAULT_CHART_ZOOM;
     S.chartZoom[chartKey] = Math.min(CHART_ZOOM_MAX, +(cur + CHART_ZOOM_STEP).toFixed(2));
     delete S.chartScroll[chartKey];
     render(true);
@@ -1726,12 +1731,12 @@ function buildChartZoomControls(chartKey){
 
 // pinch-to-zoom (2 jari) di area chart yg bisa digeser -> ubah S.chartZoom[chartKey] realtime
 function attachPinchZoom(scrollArea, chartKey){
-  let pinchStartDist = null, pinchStartZoom = 1;
+  let pinchStartDist = null, pinchStartZoom = DEFAULT_CHART_ZOOM;
   const dist = (t)=> Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
   scrollArea.addEventListener("touchstart", (e)=>{
     if(e.touches.length===2){
       pinchStartDist = dist(e.touches);
-      pinchStartZoom = S.chartZoom[chartKey] || 1;
+      pinchStartZoom = S.chartZoom[chartKey] || DEFAULT_CHART_ZOOM;
     }
   }, {passive:true});
   scrollArea.addEventListener("touchmove", (e)=>{
@@ -1739,7 +1744,7 @@ function attachPinchZoom(scrollArea, chartKey){
       e.preventDefault();
       const ratio = dist(e.touches) / pinchStartDist;
       const next = Math.min(CHART_ZOOM_MAX, Math.max(CHART_ZOOM_MIN, +(pinchStartZoom*ratio).toFixed(2)));
-      if(Math.abs(next - (S.chartZoom[chartKey]||1)) >= 0.05){
+      if(Math.abs(next - (S.chartZoom[chartKey]||DEFAULT_CHART_ZOOM)) >= 0.05){
         S.chartZoom[chartKey] = next;
         delete S.chartScroll[chartKey];
         render(true);
@@ -1782,7 +1787,7 @@ function renderSmcMiniChart(r, chartKey){
   const allCandles = r.miniCandles;
   if(!allCandles || allCandles.length<5) return null;
 
-  const zoom = S.chartZoom[chartKey] || 1;
+  const zoom = S.chartZoom[chartKey] || DEFAULT_CHART_ZOOM;
   // zoom ngatur JUMLAH candle yg tampil: zoom < 1 (dikecilkan) -> lebih banyak history candle masuk;
   // zoom > 1 (diperbesar) -> lebih sedikit candle tapi lebih detail/lebar per candle.
   const visibleN = Math.max(8, Math.min(allCandles.length, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom)));
@@ -2012,7 +2017,7 @@ function renderSndMiniChart(r, chartKey){
   const allCandles = r.miniCandles;
   if(!allCandles || allCandles.length<5) return null;
 
-  const zoom = S.chartZoom[chartKey] || 1;
+  const zoom = S.chartZoom[chartKey] || DEFAULT_CHART_ZOOM;
   const visibleN = Math.max(8, Math.min(allCandles.length, Math.round(CHART_BASE_VISIBLE_CANDLES/zoom)));
   const candles = allCandles.slice(-visibleN);
 
@@ -2388,10 +2393,10 @@ function renderSnd(){
   document.getElementById("cntOngoing").textContent = waiting.length;
   document.getElementById("cntHold").textContent = noSetup.length;
 
-  fillList("listBuy", buys, "buy", "(belum ada setup entry BUY)", buildSndCard);
-  fillList("listSell", sells, "sell", "(belum ada setup entry SELL)", buildSndCard);
-  fillList("listOngoing", waiting, "ongoing", "(belum ada yg sedang menunggu zona/konfirmasi)", buildSndCard);
-  fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSndCard);
+  fillList("listBuy", buys, "buy", "(belum ada setup entry BUY)", buildSndCard, fpSnd);
+  fillList("listSell", sells, "sell", "(belum ada setup entry SELL)", buildSndCard, fpSnd);
+  fillList("listOngoing", waiting, "ongoing", "(belum ada yg sedang menunggu zona/konfirmasi)", buildSndCard, fpSnd);
+  fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSndCard, fpSnd);
 }
 
 function renderSmc(){
@@ -2420,17 +2425,98 @@ function renderSmc(){
   document.getElementById("cntOngoing").textContent = waiting.length;
   document.getElementById("cntHold").textContent = noSetup.length;
 
-  fillList("listBuy", buys, "buy", "(belum ada setup entry BUY)", buildSmcCard);
-  fillList("listSell", sells, "sell", "(belum ada setup entry SELL)", buildSmcCard);
-  fillList("listOngoing", waiting, "ongoing", "(belum ada yg sedang menunggu IDM/BOS)", buildSmcCard);
-  fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSmcCard);
+  fillList("listBuy", buys, "buy", "(belum ada setup entry BUY)", buildSmcCard, fpSmc);
+  fillList("listSell", sells, "sell", "(belum ada setup entry SELL)", buildSmcCard, fpSmc);
+  fillList("listOngoing", waiting, "ongoing", "(belum ada yg sedang menunggu IDM/BOS)", buildSmcCard, fpSmc);
+  fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSmcCard, fpSmc);
 }
 
-function fillList(elId, items, kind, emptyTxt, buildFn){
+// Fingerprint ringkas dari field2 yg mempengaruhi tampilan kartu SMC + mini chart-nya.
+// Kalau fingerprint 2 kali render SAMA persis utk 1 simbol, kartunya TIDAK dibangun ulang
+// sama sekali (DOM node lama dipakai terus) -> scrollLeft mini chart otomatis tetap,
+// gak perlu "dipulihkan" krn elemennya emang gak pernah dihapus.
+function fpSmc(r){
+  const zoom = S.chartZoom["smc|"+r.symbol] || DEFAULT_CHART_ZOOM;
+  const live = S.livePrice[r.symbol];
+  const n = r.miniCandles ? r.miniCandles.length : 0;
+  const c = n ? r.miniCandles[n-1] : null;
+  return JSON.stringify([
+    r.status, r.direction, r.price, live, r.biasD1, r.dirH4, r.hasPullback, r.idmTaken, r.bosM5,
+    r.ob ? [r.ob.zoneBottom, r.ob.zoneTop, r.ob.mitigated] : null,
+    r.entry, r.stopLoss, r.takeProfit, r.tpLevel, r.rr, r.reasons, n,
+    c ? [c.open, c.high, c.low, c.close] : null, zoom
+  ]);
+}
+
+function fpSnd(r){
+  const zoom = S.chartZoom["snd|"+r.symbol] || DEFAULT_CHART_ZOOM;
+  const live = S.livePrice[r.symbol];
+  const n = r.miniCandles ? r.miniCandles.length : 0;
+  const c = n ? r.miniCandles[n-1] : null;
+  return JSON.stringify([
+    r.status, r.direction, r.price, live, r.biasD1, r.dirH4, r.dirH1, r.zoneReached, r.entryTf,
+    r.demandZone ? [r.demandZone.bottom, r.demandZone.top] : null,
+    r.supplyZone ? [r.supplyZone.bottom, r.supplyZone.top] : null,
+    r.entry, r.stopLoss, r.takeProfit, r.rr, r.reasons, n,
+    c ? [c.open, c.high, c.low, c.close] : null, zoom
+  ]);
+}
+
+// fillList SEKARANG melakukan "keyed diffing" per simbol, bukan wipe-total tiap panggil:
+// - simbol yg fingerprint-nya SAMA dgn render sebelumnya -> DOM node LAMA dipakai lagi apa
+//   adanya (termasuk mini chart & posisi scroll-nya) -> gak ada "kedip balik ke kiri".
+// - simbol yg datanya berubah / baru -> kartunya (termasuk mini chart) dibangun ulang seperti
+//   biasa, lalu scroll-nya di-restore dari S.chartScroll (chart lain yg gak berubah gak kena).
+// - urutan tetap ngikutin urutan `items` (re-order pakai insertBefore, bukan re-create).
+function fillList(elId, items, kind, emptyTxt, buildFn, fpFn){
   const el = document.getElementById(elId);
-  el.innerHTML = "";
-  if(!items.length){ const e=document.createElement("div"); e.className="empty"; e.textContent=emptyTxt; el.appendChild(e); return; }
-  items.forEach(r => el.appendChild(buildFn(r, kind)));
+  if(!el._cardMap) el._cardMap = new Map(); // symbol -> {node, fp}
+
+  if(!items.length){
+    el._cardMap.clear();
+    el.innerHTML = "";
+    const e=document.createElement("div"); e.className="empty"; e.textContent=emptyTxt; el.appendChild(e);
+    return;
+  }
+  // buang placeholder "kosong" dari render sebelumnya kalau sekarang udah ada isinya
+  if(el._cardMap.size===0 && el.firstElementChild && el.firstElementChild.className==="empty"){
+    el.innerHTML = "";
+  }
+
+  const seen = new Set();
+  let prevNode = null;
+
+  items.forEach(r=>{
+    const key = r.symbol;
+    seen.add(key);
+    const fp = fpFn ? fpFn(r) : null;
+    let entry = el._cardMap.get(key);
+
+    if(!entry || fp===null || entry.fp !== fp){
+      const node = buildFn(r, kind);
+      if(entry && entry.node.parentNode === el){
+        el.replaceChild(node, entry.node);
+      } else if(prevNode){
+        el.insertBefore(node, prevNode.nextSibling);
+      } else {
+        el.insertBefore(node, el.firstChild);
+      }
+      entry = { node, fp };
+      el._cardMap.set(key, entry);
+    } else if(prevNode ? prevNode.nextSibling !== entry.node : el.firstChild !== entry.node){
+      // data sama, cuma posisinya geser (mis. urutan ranking berubah) -> pindahkan node
+      // yg SAMA (bukan bikin baru), jadi scroll/zoom chart di dalamnya tetap utuh.
+      el.insertBefore(entry.node, prevNode ? prevNode.nextSibling : el.firstChild);
+    }
+    prevNode = entry.node;
+  });
+
+  for(const [key, entry] of el._cardMap){
+    if(!seen.has(key)){
+      if(entry.node.parentNode === el) el.removeChild(entry.node);
+      el._cardMap.delete(key);
+    }
+  }
 }
 
 /* ============================================================
