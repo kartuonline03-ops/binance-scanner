@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 25/8/2026 10:57</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 25/8/2026 18:05</div>
   </div>
 </header>
 
@@ -398,6 +398,13 @@ const SMC_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar Order Block, dlm satua
    ============================================================ */
 const SND_TF = { d1:"1d", h4:"4h", h1:"1h", m5:"5m", m1:"1m" };
 const SND_LIMIT = { d1:120, h4:150, h1:200, m5:200, m1:200 };
+// Alur 2 (SMC, TF digeser 1 tingkat): H1(bias) -> M15(arah) -> M5(pullback/IDM) -> M1(BOS+OB entry).
+// Aturan logikanya PERSIS SAMA dgn alur SMC asli (analyzeSmcSetup), cuma parameter TF-nya digeser.
+// h1 & m5 SENGAJA gak dikasih limit/fetch terpisah -> alur ini numpang pakai data yg SUDAH ada
+// di S.smcCandles.h1/.m5 (alur 1) & S.sndCandles.m1 (mode SND), biar gak dobel fetch REST/WS utk
+// interval yg sama persis. Cuma m15 yg genuinely baru (perlu fetch & stream sendiri).
+const SMC2_TF = { h1:"1h", m15:"15m", m5:"5m", m1:"1m" };
+const SMC2_LIMIT = { h1:200, m15:200, m5:200, m1:200 };
 const SND_TRIGGER_TF = "m1";        // TF paling halus -> sumber harga live & trigger realtime utama
 const SND_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar zona S/D, dlm satuan ATR M5
 const SND_ATR_TP_MULT = 1.5;         // fallback TP (kalau blm ada zona lawan yg relevan), dlm satuan ATR M5 (diperkecil dari 3.0 -> lebih cocok scalping, TP lebih dekat/cepat kena)
@@ -435,6 +442,11 @@ const S = {
                                                  // lintas-scan walau candle asalnya sudah keluar dari jendela
                                                  // lookback (biar gak "lupa" tiap kali jendela candle geser)
   smcIndPersistH1: {},                          // sama spt di atas, tapi utk IDM H1 (yg dipakai logika entry asli)
+  // --- Alur 2 (H1->M15->M5->M1), persistensi terpisah dari alur 1 biar riwayat IND gak ketuker ---
+  smc2Candles: { m15:{} },                       // cuma m15 yg genuinely baru; h1/m5/m1 numpang store alur lain
+  smc2Results: {},
+  smc2IndPersist: {},                            // persist IND (REAL) di M1 (peran spt smcIndPersist tapi utk M1)
+  smc2IndPersistH1: {},                          // persist IDM di M5 (peran spt smcIndPersistH1 tapi utk M5)
   // --- state khusus mode SND (Supply & Demand) ---
   sndCandles: { d1:{}, h4:{}, h1:{}, m5:{}, m1:{} },  // tf -> tradeSymbol -> [candle]
   sndResults: {},                                     // display -> hasil analisa SND
@@ -607,6 +619,23 @@ async function pollSndSymbolOnce(item, doHtf){
   }
 }
 
+// Polling fallback khusus Alur 2: cuma m15 yg genuinely perlu fetch sendiri (h1/m5/m1
+// sudah pasti fresh di tick yg sama krn pollSmcSymbolOnce & pollSndSymbolOnce jalan duluan).
+async function pollSmc2SymbolOnce(item, doHtf){
+  const tradeSymbol = item.tradeSymbol, display = item.display;
+  if(!doHtf){ recomputeSmc2(tradeSymbol, display); return; } // m15 candle blm tentu berubah tiap tick, gak perlu fetch tiap tick
+  try{
+    const rowsM15 = await fetchHistory(tradeSymbol, SMC2_TF.m15, 2);
+    if(rowsM15.length){
+      const list = S.smc2Candles.m15[tradeSymbol] || (S.smc2Candles.m15[tradeSymbol]=[]);
+      rowsM15.forEach(r=>mergeCandleRow(list, r, SMC2_LIMIT.m15));
+    }
+    recomputeSmc2(tradeSymbol, display);
+  }catch(e){
+    log(`Polling Alur2 gagal untuk ${display}: ${e}`, "err");
+  }
+}
+
 function startPolling(){
   if(pollTimer) return;
   pollIndex = 0; pollTickCount = 0;
@@ -622,6 +651,7 @@ function startPolling(){
       // Polling paralel: kedua mode tetap diupdate walau yg tampil cuma salah satu.
       await pollSmcSymbolOnce(item, doHtf);
       await pollSndSymbolOnce(item, doHtf);
+      await pollSmc2SymbolOnce(item, doHtf);
     }
     render();
   }, POLL_INTERVAL_MS);
@@ -1273,6 +1303,192 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
   });
 }
+/* ============================================================
+   ALUR 2 — logika PERSIS SAMA dgn analyzeSmcSetup() di atas (bias -> arah -> pullback
+   -> IDM -> BOS -> OB entry), cuma parameter timeframe-nya digeser 1 tingkat:
+   D1->H1, H4->M15, H1->M5, M5->M1. Nama field hasil DIPERTAHANKAN sama (biasD1, dirH4,
+   structD1, indM5*, dst) supaya renderSmcMiniChart/renderSmcAlurBlock/fpSmc yg sudah ada
+   bisa dipakai ULANG apa adanya tanpa perlu tau ini alur yg mana — cuma teks label yg beda,
+   itu pun diatur dari luar (lihat ALUR2_CFG di renderSmcAlurBlock).
+   ============================================================ */
+function analyzeSmcSetupAlt(candlesH1, candlesM15, candlesM5, candlesM1, tradeSymbol){
+  const reasons = [];
+  const empty = { status:"NO_SETUP", direction:null, reasons };
+
+  if(!candlesH1 || !candlesM15 || !candlesM5 || !candlesM1) return empty;
+  if(candlesH1.length < STRUCT_LOOKBACK || candlesM15.length < STRUCT_LOOKBACK ||
+     candlesM5.length < Math.max(STRUCT_LOOKBACK, IND_LOOKBACK+5) || candlesM1.length < STRUCT_LOOKBACK+OB_SCAN_BACK){
+    reasons.push("Data candle salah satu timeframe (H1/M15/M5/M1) belum cukup untuk analisa struktur.");
+    return empty;
+  }
+
+  const liqH1 = detectLiquidityZones(candlesH1);
+  if(liqH1.bsl){
+    reasons.push(liqH1.bsl.swept
+      ? `H1 Liquidity: area BSL (buy-side) di ${fmt(liqH1.bsl.bottom)}-${fmt(liqH1.bsl.top)} sudah DISAPU ${liqH1.bsl.sweptBarsAgo} candle H1 lalu -> likuiditas atas sudah dimakan.`
+      : `H1 Liquidity: area BSL (buy-side) di ${fmt(liqH1.bsl.bottom)}-${fmt(liqH1.bsl.top)} dari ${liqH1.bsl.count} equal high H1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  }
+  if(liqH1.ssl){
+    reasons.push(liqH1.ssl.swept
+      ? `H1 Liquidity: area SSL (sell-side) di ${fmt(liqH1.ssl.bottom)}-${fmt(liqH1.ssl.top)} sudah DISAPU ${liqH1.ssl.sweptBarsAgo} candle H1 lalu -> likuiditas bawah sudah dimakan.`
+      : `H1 Liquidity: area SSL (sell-side) di ${fmt(liqH1.ssl.bottom)}-${fmt(liqH1.ssl.top)} dari ${liqH1.ssl.count} equal low H1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  }
+
+  const structM1early = analyzeStructure(candlesM1);
+  const indM1Raw = detectInducement(candlesM1);
+
+  let indM1 = indM1Raw;
+  if(tradeSymbol){
+    if(!S.smc2IndPersist[tradeSymbol]) S.smc2IndPersist[tradeSymbol] = [];
+    const hist = S.smc2IndPersist[tradeSymbol];
+    if(indM1Raw && indM1Raw.verdict==="REAL" && !hist.some(h=>h.openTime===indM1Raw.openTime)){
+      hist.push({ level:indM1Raw.level, type:indM1Raw.type, expectDir:indM1Raw.expectDir, openTime:indM1Raw.openTime });
+      if(hist.length>15) hist.shift();
+    }
+    if(hist.length){
+      const histPos = hist.map(h=>{
+        let barsAgo = null;
+        for(let i=candlesM1.length-1; i>=0; i--){
+          if(candlesM1[i].openTime===h.openTime){ barsAgo=(candlesM1.length-1-i); break; }
+        }
+        return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
+      });
+      const latestH = histPos[histPos.length-1];
+      indM1 = { level:latestH.level, type:latestH.type, expectDir:latestH.expectDir, verdict:"REAL",
+                barsAgo: latestH.barsAgo,
+                latest: (indM1Raw && indM1Raw.verdict!=="REAL") ? { level:indM1Raw.level, verdict:indM1Raw.verdict, barsAgo:indM1Raw.barsAgo } : null,
+                history: histPos.slice(0, -1) };
+    }
+  }
+  const obEarly = detectOrderBlock(candlesM1);
+
+  const liqExtra = {
+    bslZone: liqH1.bsl, sslZone: liqH1.ssl,
+    structM5Trend: structM1early.trend, structM5Event: structM1early.event,
+    structM5High: structM1early.swingHigh, structM5Low: structM1early.swingLow,
+    indM5Level: indM1 ? indM1.level : null, indM5Type: indM1 ? indM1.type : null,
+    indM5Verdict: indM1 ? indM1.verdict : null, indM5BarsAgo: indM1 ? indM1.barsAgo : null,
+    indM5LatestLevel: indM1 && indM1.latest ? indM1.latest.level : null,
+    indM5LatestVerdict: indM1 && indM1.latest ? indM1.latest.verdict : null,
+    indM5LatestBarsAgo: indM1 && indM1.latest ? indM1.latest.barsAgo : null,
+    indM5History: indM1 && indM1.history ? indM1.history : [],
+    ob: obEarly,
+    miniCandles: candlesM1.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
+  };
+
+  // --- Langkah 1: bias H1 (peran D1 di alur asli) ---
+  const structH1 = analyzeStructure(candlesH1);
+  const biasD1 = structH1.trend || "RANGING";
+  reasons.push(`H1: bias ${biasLabel(structH1.trend)} (swing high ${fmt(structH1.swingHigh)} / swing low ${fmt(structH1.swingLow)})`);
+  if(biasD1==="RANGING"){
+    reasons.push("H1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
+    return Object.assign({}, empty, liqExtra, { biasD1 });
+  }
+
+  // --- Langkah 2: arah M15 (peran H4), harus searah bias H1 ---
+  const structM15 = analyzeStructure(candlesM15);
+  const dirH4 = structM15.trend;
+  reasons.push(`M15: arah ${biasLabel(dirH4)} (swing high ${fmt(structM15.swingHigh)} / swing low ${fmt(structM15.swingLow)})`);
+  if(!dirH4 || dirH4 !== biasD1){
+    reasons.push(`M15 tidak searah dengan bias H1 (${biasLabel(biasD1)}) -> tunggu M15 align dulu, jangan cari entry.`);
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+  }
+  const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+  reasons.push(`H1 & M15 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
+
+  // --- Langkah 3: M5 pullback (peran H1) terhadap M15 ---
+  const paM5 = analyzePriceAction(candlesM5);
+  const lastM5 = candlesM5[candlesM5.length-1];
+  const corrM5 = (paM5.swingHigh!==null && paM5.swingLow!==null) ? classifyCorrection(paM5, lastM5, mainDir) : null;
+  const hasPullback = !!(corrM5 && corrM5.retracePct > 0.1);
+  if(!hasPullback){
+    reasons.push("M5 belum terlihat pullback/retracement yang berarti terhadap M15 -> tunggu koreksi dulu sebelum cari entry.");
+    return Object.assign({}, empty, liqExtra, { biasD1, dirH4, hasPullback:false });
+  }
+  reasons.push(`M5: sedang pullback ~${fmt(corrM5.retracePct*100,0)}% dari swing terakhir (searah koreksi vs M15 ${biasLabel(dirH4)})`);
+
+  // --- Langkah 4: cek IDM di M5 (peran H1) sudah diambil / belum ---
+  const indM5Raw = detectInducement(candlesM5);
+  let indM5 = indM5Raw;
+  if(tradeSymbol){
+    const persistedM5 = S.smc2IndPersistH1[tradeSymbol];
+    if(indM5Raw && indM5Raw.verdict==="REAL"){
+      S.smc2IndPersistH1[tradeSymbol] = { level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime };
+    }else if(persistedM5 && persistedM5.expectDir===mainDir){
+      let barsAgo = null;
+      for(let i=candlesM5.length-1; i>=0; i--){
+        if(candlesM5[i].openTime===persistedM5.openTime){ barsAgo=(candlesM5.length-1-i); break; }
+      }
+      indM5 = { level:persistedM5.level, type:persistedM5.type, expectDir:persistedM5.expectDir, verdict:"REAL", barsAgo };
+    }
+  }
+  const idmTaken = !!(indM5 && indM5.expectDir===mainDir && indM5.verdict!=="FAKE");
+  if(!idmTaken){
+    if(indM5 && indM5.expectDir===mainDir && indM5.verdict==="FAKE"){
+      reasons.push("M5: level liquidity minor sempat kesentuh tapi ternyata FAKE (bukan trap, lanjut breakout) -> bukan IDM valid, tunggu setup baru.");
+    }else{
+      reasons.push("M5: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
+    }
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
+  }
+  reasons.push(`M5: IDM sudah diambil (sweep ${indM5.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indM5.verdict}) -> boleh mulai cari trigger entry di M1.`);
+
+  // --- Langkah 5: M1 cari BOS (peran M5) searah M5/M15 ---
+  const structM1 = analyzeStructure(candlesM1);
+  const bosOk = structM1.trend===dirH4 && structM1.event==="BOS";
+  if(!bosOk){
+    reasons.push(structM1.event==="CHOCH"
+      ? "M1: yang muncul CHoCH (potensi pembalikan), bukan BOS searah rencana -> tunggu, jangan masuk dulu."
+      : "M1: belum ada BOS (Break of Structure) yang searah M5/M15 -> tunggu momentum M1 pecah searah dulu.");
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, direction:mainDir });
+  }
+  reasons.push(`M1: BOS terkonfirmasi searah (${mainDir}) -> struktur M1 sudah pecah mengikuti M5/M15.`);
+
+  // --- Langkah 6: Order Block M1 (peran OB M5) sbg area entry ---
+  const obM1 = obEarly;
+  if(!obM1 || obM1.direction!==mainDir){
+    reasons.push("M1: BOS sudah ada tapi candle Order Block belum ketemu/tidak searah -> tunggu konfirmasi lanjutan.");
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
+  }
+
+  const atrArrM1 = calcAtr(candlesM1, ATR_PERIOD);
+  let atrM1 = null;
+  for(let i=atrArrM1.length-1;i>=0;i--){ if(atrArrM1[i]!==null){ atrM1=atrArrM1[i]; break; } }
+  const buffer = (atrM1!==null ? atrM1 : (obM1.zoneTop-obM1.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
+  const entry = obM1.optimalEntry;
+  let stopLoss, takeProfit, tpLevel;
+  if(mainDir==="BUY"){
+    stopLoss = obM1.zoneBottom - buffer;
+    if(structM15.swingHigh!==null && structM15.swingHigh>entry){ takeProfit=structM15.swingHigh; tpLevel="M15"; }
+    else { takeProfit = paM5.swingHigh; tpLevel="M5"; }
+  }else{
+    stopLoss = obM1.zoneTop + buffer;
+    if(structM15.swingLow!==null && structM15.swingLow<entry){ takeProfit=structM15.swingLow; tpLevel="M15"; }
+    else { takeProfit = paM5.swingLow; tpLevel="M5"; }
+  }
+  const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
+  reasons.push(`Order Block M1 (${mainDir}) ketemu: zona ${fmt(obM1.zoneBottom)} - ${fmt(obM1.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
+  reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+
+  const livePriceM1 = candlesM1[candlesM1.length-1].close;
+  const gapAbs = livePriceM1 - entry;
+  const gapPct = (gapAbs/entry)*100;
+  const sudahLewatEntry = mainDir==="BUY" ? gapAbs>0 : gapAbs<0;
+  if(Math.abs(gapPct) < 0.05){
+    reasons.push(`Harga live (${fmt(livePriceM1)}) masih PAS di level Entry -> siap dieksekusi langsung tanpa nunggu retest.`);
+  }else if(sudahLewatEntry){
+    reasons.push(`Harga live (${fmt(livePriceM1)}) sudah "lari" ${fmt(Math.abs(gapPct),2)}% dari level Entry (${fmt(entry)}) ke arah ${mainDir} -> kalau mau RR sesuai rencana, perlu tunggu retest ke level Entry; kalau market entry sekarang, RR bakal lebih kecil dari yg dihitung di atas.`);
+  }else{
+    reasons.push(`Harga live (${fmt(livePriceM1)}) malah ${fmt(Math.abs(gapPct),2)}% di SISI BERLAWANAN dari level Entry (${fmt(entry)}) -> harga sudah "kebablasan" balik ke arah OB, entry di level ini lebih dekat/mudah kena kalau limit order.`);
+  }
+
+  return Object.assign({}, liqExtra, {
+    status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
+    direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
+    ob: obM1, entry, stopLoss, takeProfit, tpLevel, rr, atrM5: atrM1,
+    structD1: structH1, structH4: structM15, structH1: analyzeStructure(candlesM5), reasons,
+  });
+}
 function recomputeSmc(tradeSymbol, display){
   const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
         h1 = S.smcCandles.h1[tradeSymbol], m5 = S.smcCandles.m5[tradeSymbol];
@@ -1285,6 +1501,19 @@ function recomputeSmc(tradeSymbol, display){
     S.closeEventCount++;
     S.lastCloseInfo = `${display} @ ${new Date().toLocaleTimeString("id-ID",{hour12:false})}`;
   }
+  scheduleRedraw();
+}
+
+// Alur 2 (H1->M15->M5->M1): numpang data candle H1/M5 dari S.smcCandles (alur 1) & M1 dari
+// S.sndCandles (mode SND) — cuma S.smc2Candles.m15 yg genuinely fetch/store sendiri.
+function recomputeSmc2(tradeSymbol, display){
+  const h1 = S.smcCandles.h1[tradeSymbol], m15 = S.smc2Candles.m15[tradeSymbol],
+        m5 = S.smcCandles.m5[tradeSymbol], m1 = S.sndCandles.m1[tradeSymbol];
+  if(!m1 || !m1.length) return;
+  const setup = analyzeSmcSetupAlt(h1, m15, m5, m1, tradeSymbol);
+  setup.symbol = display;
+  setup.price = m1[m1.length-1].close;
+  S.smc2Results[display] = setup;
   scheduleRedraw();
 }
 
@@ -1578,14 +1807,28 @@ function openWsConnection(connId, streamNames, symbolLookup){
           const list = S.smcCandles[smcTfKey][tradeSymbol] || (S.smcCandles[smcTfKey][tradeSymbol]=[]);
           if(smcTfKey===SMC_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
           const closed = applyKlineUpdate(list, k, SMC_LIMIT[smcTfKey]);
-          if(closed) recomputeSmc(tradeSymbol, display);
+          if(closed){
+            recomputeSmc(tradeSymbol, display);
+            // h1 & m5 dipakai juga sbg bahan Alur 2 (peran bias & pullback) -> ikut recompute
+            if(smcTfKey==="h1" || smcTfKey==="m5") recomputeSmc2(tradeSymbol, display);
+          }
         }
         const sndTfKey = Object.keys(SND_TF).find(k2 => SND_TF[k2]===streamInterval);
         if(sndTfKey){
           const list = S.sndCandles[sndTfKey][tradeSymbol] || (S.sndCandles[sndTfKey][tradeSymbol]=[]);
           if(sndTfKey===SND_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
           const closed = applyKlineUpdate(list, k, SND_LIMIT[sndTfKey]);
-          if(closed) recomputeSnd(tradeSymbol, display);
+          if(closed){
+            recomputeSnd(tradeSymbol, display);
+            // m1 dipakai juga sbg TF eksekusi Alur 2 -> ikut recompute
+            if(sndTfKey==="m1") recomputeSmc2(tradeSymbol, display);
+          }
+        }
+        // m15 murni khusus Alur 2 (gak dipakai alur/mode lain)
+        if(streamInterval===SMC2_TF.m15){
+          const list = S.smc2Candles.m15[tradeSymbol] || (S.smc2Candles.m15[tradeSymbol]=[]);
+          const closed = applyKlineUpdate(list, k, SMC2_LIMIT.m15);
+          if(closed) recomputeSmc2(tradeSymbol, display);
         }
       }catch(e){ log(`Error proses pesan WS: ${e}`, "err"); }
     };
@@ -1783,7 +2026,8 @@ function restoreChartScroll(scrollArea, chartKey, triesLeft){
   });
 }
 
-function renderSmcMiniChart(r, chartKey){
+function renderSmcMiniChart(r, chartKey, execLabel){
+  execLabel = execLabel || "M5";
   const allCandles = r.miniCandles;
   if(!allCandles || allCandles.length<5) return null;
 
@@ -1842,14 +2086,14 @@ function renderSmcMiniChart(r, chartKey){
     const yy=y(r.structM5High);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BULLISH" ? "BOS"
-      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : "Swing High (M5)";
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BEARISH" ? "CHoCH" : `Swing High (${execLabel})`;
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy-3}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   if(showStructLow){
     const yy=y(r.structM5Low);
     svgParts.push(`<line x1="0" y1="${yy}" x2="${chartW}" y2="${yy}" stroke="#58a6ff" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>`);
     const lbl = r.structM5Event==="BOS" && r.structM5Trend==="BEARISH" ? "BOS"
-      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : "Swing Low (M5)";
+      : r.structM5Event==="CHOCH" && r.structM5Trend==="BULLISH" ? "CHoCH" : `Swing Low (${execLabel})`;
     svgParts.push(`<text x="${chartW-4}" text-anchor="end" y="${yy+11}" fill="#58a6ff" font-family="ui-monospace,monospace" font-size="9">${lbl}</text>`);
   }
   // marker inducement (IND) - titik sweep likuiditas minor, ungu titik-titik
@@ -2167,37 +2411,35 @@ function renderSndMiniChart(r, chartKey){
    KARTU UTK MODE SMC MULTI-TF — tampilkan bias D1, arah H4,
    status pullback/IDM H1, BOS M5, Order Block, dan entry/SL/TP.
    ============================================================ */
-function buildSmcCard(r, kind){
-  const div = document.createElement("div");
-  div.className = "card " + kind;
+// cfg = { topLabel, midLabel, lowLabel, execLabel, flowLabel, flowHeading }
+// Blok inilah yg dipakai ULANG utk Alur 1 (D1→H4→H1→M5) & Alur 2 (H1→M15→M5→M1) — isinya
+// sama persis, cuma teks label & sumber data (r) yg beda tergantung alur mana yg dirender.
+function renderSmcAlurBlock(r, chartKey, cfg, kind){
+  const wrap = document.createElement("div"); wrap.className = "smc-alur-block";
 
-  const row1 = document.createElement("div"); row1.className="row1";
-  const sym = document.createElement("span"); sym.className="sym"; sym.textContent = r.symbol;
-  const badge = document.createElement("span"); badge.className="badge "+kind;
-  const badgeTxt = {ENTRY_BUY:"ENTRY BUY", ENTRY_SELL:"ENTRY SELL", WAIT:"TUNGGU", NO_SETUP:"NO SETUP"};
-  badge.textContent = badgeTxt[r.status] || r.status;
-  row1.appendChild(sym);
+  const head = document.createElement("div"); head.className="row1"; head.style.marginTop="2px";
+  const headLabel = document.createElement("span");
+  headLabel.style.cssText = "font-size:11px; color:var(--dim); font-family:var(--mono); letter-spacing:.02em;";
+  headLabel.textContent = cfg.flowHeading;
+  head.appendChild(headLabel);
   if(r.direction){
     const dir = document.createElement("span");
     dir.className = "dirbadge " + (r.direction==="BUY" ? "buy" : "sell");
     dir.textContent = r.direction==="BUY" ? "B" : "S";
-    row1.appendChild(dir);
+    head.appendChild(dir);
   }
-  row1.appendChild(badge);
-  div.appendChild(row1);
-
-  const priceLine = document.createElement("div");
-  const liveVal = S.livePrice[r.symbol];
-  const liveDiffers = liveVal!==undefined && liveVal!==null && r.price && Math.abs(liveVal - r.price) > (r.price*0.0000001);
-  priceLine.innerHTML = `price: <span class="price">${fmt(r.price)}</span>` + (liveDiffers ? ` &nbsp; <span class="liveprice">live: ${fmt(liveVal)}</span>` : "");
-  div.appendChild(priceLine);
+  const badgeTxt = {ENTRY_BUY:"ENTRY BUY", ENTRY_SELL:"ENTRY SELL", WAIT:"TUNGGU", NO_SETUP:"NO SETUP"};
+  const badge = document.createElement("span"); badge.className="badge "+kind;
+  badge.textContent = badgeTxt[r.status] || r.status;
+  head.appendChild(badge);
+  wrap.appendChild(head);
 
   const tags = document.createElement("div"); tags.className="tags";
-  if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`D1 bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
-  if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H4 arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
+  if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`${cfg.topLabel} bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
+  if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`${cfg.midLabel} arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
   if(r.hasPullback!==undefined){
     const t=document.createElement("span"); t.className = "tag " + (r.hasPullback ? "confirmed" : "smc-no");
-    t.textContent = r.hasPullback ? "H1: pullback OK" : "H1: belum pullback";
+    t.textContent = r.hasPullback ? `${cfg.lowLabel}: pullback OK` : `${cfg.lowLabel}: belum pullback`;
     tags.appendChild(t);
   }
   if(r.idmTaken!==undefined){
@@ -2207,15 +2449,15 @@ function buildSmcCard(r, kind){
   }
   if(r.bosM5!==undefined){
     const t=document.createElement("span"); t.className = "tag " + (r.bosM5 ? "confirmed" : "smc-wait");
-    t.textContent = r.bosM5 ? "M5: BOS searah" : "M5: BOS blm ada";
+    t.textContent = r.bosM5 ? `${cfg.execLabel}: BOS searah` : `${cfg.execLabel}: BOS blm ada`;
     tags.appendChild(t);
   }
-  if(tags.children.length) div.appendChild(tags);
+  if(tags.children.length) wrap.appendChild(tags);
 
   if(r.ob){
     const obLine = document.createElement("div"); obLine.className="note";
-    obLine.textContent = `Order Block M5: ${fmt(r.ob.zoneBottom)} - ${fmt(r.ob.zoneTop)}${r.ob.mitigated? " (sudah pernah diretest)":" (fresh)"}`;
-    div.appendChild(obLine);
+    obLine.textContent = `Order Block ${cfg.execLabel}: ${fmt(r.ob.zoneBottom)} - ${fmt(r.ob.zoneTop)}${r.ob.mitigated? " (sudah pernah diretest)":" (fresh)"}`;
+    wrap.appendChild(obLine);
   }
 
   if(r.entry!==undefined && r.entry!==null && r.stopLoss!==undefined && r.takeProfit!==undefined){
@@ -2223,31 +2465,63 @@ function buildSmcCard(r, kind){
     tpsl.innerHTML = `<div class="entry-line"><b>Entry</b>: ${fmt(r.entry)}</div>` +
       `<div class="tpsl-line"><span class="tp">(TP ${r.tpLevel||""}): ${fmt(r.takeProfit)}</span> &nbsp; <span class="sl">(SL): ${fmt(r.stopLoss)}</span></div>` +
       (r.rr ? `<div style="color:var(--dim); margin-top:2px;">RR ~${fmt(r.rr,2)}</div>` : "");
-    div.appendChild(tpsl);
+    wrap.appendChild(tpsl);
   }
 
-  if(kind==="ongoing"){
+  if(r.status==="WAIT"){
     const note = document.createElement("div"); note.className="note";
     note.textContent = "(masih menunggu — lihat detail alasan utk tau tahap mana yg belum terpenuhi)";
-    div.appendChild(note);
+    wrap.appendChild(note);
   }
 
-  const miniChart = renderSmcMiniChart(r, "smc|" + r.symbol);
-  if(miniChart) div.appendChild(miniChart);
+  const miniChart = renderSmcMiniChart(r, chartKey, cfg.execLabel);
+  if(miniChart) wrap.appendChild(miniChart);
 
   if(r.reasons && r.reasons.length){
     const det = document.createElement("details");
-    const detKey = kind + "|" + r.symbol;
+    const detKey = chartKey; // sudah unik per alur+simbol
     det.open = S.openDetails.has(detKey);
     det.addEventListener("toggle", ()=>{
       if(det.open) S.openDetails.add(detKey); else S.openDetails.delete(detKey);
     });
-    const sum = document.createElement("summary"); sum.textContent = "detail alur D1→H4→H1→M5";
+    const sum = document.createElement("summary"); sum.textContent = `detail alur ${cfg.flowLabel}`;
     det.appendChild(sum);
     const ul = document.createElement("ul"); ul.className="reasons";
     r.reasons.forEach(t=>{ const li=document.createElement("li"); li.textContent=t; ul.appendChild(li); });
     det.appendChild(ul);
-    div.appendChild(det);
+    wrap.appendChild(det);
+  }
+
+  return wrap;
+}
+
+const SMC_ALUR1_CFG = { topLabel:"D1", midLabel:"H4", lowLabel:"H1", execLabel:"M5", flowLabel:"D1→H4→H1→M5", flowHeading:"Alur 1 — D1→H4→H1→M5" };
+const SMC_ALUR2_CFG = { topLabel:"H1", midLabel:"M15", lowLabel:"M5", execLabel:"M1", flowLabel:"H1→M15→M5→M1", flowHeading:"Alur 2 — H1→M15→M5→M1" };
+
+function buildSmcCard(r, kind){
+  const div = document.createElement("div");
+  div.className = "card " + kind;
+
+  const row1 = document.createElement("div"); row1.className="row1";
+  const sym = document.createElement("span"); sym.className="sym"; sym.textContent = r.symbol;
+  row1.appendChild(sym);
+  div.appendChild(row1);
+
+  const priceLine = document.createElement("div");
+  const liveVal = S.livePrice[r.symbol];
+  const liveDiffers = liveVal!==undefined && liveVal!==null && r.price && Math.abs(liveVal - r.price) > (r.price*0.0000001);
+  priceLine.innerHTML = `price: <span class="price">${fmt(r.price)}</span>` + (liveDiffers ? ` &nbsp; <span class="liveprice">live: ${fmt(liveVal)}</span>` : "");
+  div.appendChild(priceLine);
+
+  div.appendChild(renderSmcAlurBlock(r, "smc|" + r.symbol, SMC_ALUR1_CFG, kind));
+
+  // Alur 2 (H1→M15→M5→M1) — ditampilkan sbg chart KEDUA di kartu yg sama, kalau datanya sudah siap.
+  const r2 = S.smc2Results[r.symbol];
+  if(r2 && r2.miniCandles && r2.miniCandles.length){
+    const divider = document.createElement("div");
+    divider.style.cssText = "margin:12px 0 6px; border-top:1px dashed #262c36;";
+    div.appendChild(divider);
+    div.appendChild(renderSmcAlurBlock(r2, "smc2|" + r.symbol, SMC_ALUR2_CFG, kind));
   }
 
   return div;
@@ -2440,11 +2714,22 @@ function fpSmc(r){
   const live = S.livePrice[r.symbol];
   const n = r.miniCandles ? r.miniCandles.length : 0;
   const c = n ? r.miniCandles[n-1] : null;
+  // Alur 2 dirender BERSAMAAN di kartu yg sama (lihat buildSmcCard) -> fingerprint-nya HARUS
+  // ikut disertakan di sini, kalau tidak, kartu gak akan di-rebuild pas cuma Alur 2 yg berubah
+  // (mis. bias H1/M15-nya sama tapi trigger M1-nya update duluan).
+  const r2 = S.smc2Results[r.symbol];
+  const zoom2 = S.chartZoom["smc2|"+r.symbol] || DEFAULT_CHART_ZOOM;
+  const n2 = r2 && r2.miniCandles ? r2.miniCandles.length : 0;
+  const c2 = n2 ? r2.miniCandles[n2-1] : null;
   return JSON.stringify([
     r.status, r.direction, r.price, live, r.biasD1, r.dirH4, r.hasPullback, r.idmTaken, r.bosM5,
     r.ob ? [r.ob.zoneBottom, r.ob.zoneTop, r.ob.mitigated] : null,
     r.entry, r.stopLoss, r.takeProfit, r.tpLevel, r.rr, r.reasons, n,
-    c ? [c.open, c.high, c.low, c.close] : null, zoom
+    c ? [c.open, c.high, c.low, c.close] : null, zoom,
+    r2 ? [r2.status, r2.direction, r2.biasD1, r2.dirH4, r2.hasPullback, r2.idmTaken, r2.bosM5,
+          r2.ob ? [r2.ob.zoneBottom, r2.ob.zoneTop, r2.ob.mitigated] : null,
+          r2.entry, r2.stopLoss, r2.takeProfit, r2.rr, r2.reasons, n2,
+          c2 ? [c2.open, c2.high, c2.low, c2.close] : null, zoom2] : null
   ]);
 }
 
@@ -2561,6 +2846,8 @@ async function startScan(){
   // harus tetap kebawa lintas sesi scan (walau tombol "Mulai Scan" ditekan ulang), bukan cuma
   // lintas pergeseran jendela candle. Cuma direset kalau memang di-clear manual/reload halaman.
   S.sndCandles={ d1:{}, h4:{}, h1:{}, m5:{}, m1:{} }; S.sndResults={};
+  S.smc2Candles={ m15:{} }; S.smc2Results={};
+  // S.smc2IndPersist & S.smc2IndPersistH1 SENGAJA TIDAK direset, sama alasannya spt smcIndPersist di atas.
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
   render();
@@ -2605,6 +2892,9 @@ async function startScan(){
       S.sndCandles.h1[item.tradeSymbol] = rowsH1.slice(-SND_LIMIT.h1);
       S.sndCandles.m5[item.tradeSymbol] = rowsM5.slice(-SND_LIMIT.m5);
       S.sndCandles.m1[item.tradeSymbol] = await fetchHistory(item.tradeSymbol, SND_TF.m1, SND_LIMIT.m1);
+      // Alur 2: cuma M15 yg genuinely baru (h1/m5/m1 numpang rowsH1/rowsM5/sndCandles.m1 di atas)
+      const rowsM15 = await fetchHistory(item.tradeSymbol, SMC2_TF.m15, SMC2_LIMIT.m15);
+      S.smc2Candles.m15[item.tradeSymbol] = rowsM15.slice(-SMC2_LIMIT.m15);
       ok++;
     }catch(e){
       log(`Gagal ambil riwayat ${item.display}: ${e}`, "err");
@@ -2618,6 +2908,7 @@ async function startScan(){
   for(const item of S.symbols){
     recomputeSmc(item.tradeSymbol, item.display);
     recomputeSnd(item.tradeSymbol, item.display);
+    recomputeSmc2(item.tradeSymbol, item.display);
   }
   S.baselineDone = true;
   render();
@@ -2625,8 +2916,8 @@ async function startScan(){
   const streamNames = [];
   for(const item of S.symbols){
     const low = item.tradeSymbol.toLowerCase();
-    // d1/h4/h1/m5 sama utk kedua mode -> 1 stream cukup; m1 tambahan khusus SND
-    streamNames.push(`${low}@kline_${SMC_TF.d1}`, `${low}@kline_${SMC_TF.h4}`, `${low}@kline_${SMC_TF.h1}`, `${low}@kline_${SMC_TF.m5}`, `${low}@kline_${SND_TF.m1}`);
+    // d1/h4/h1/m5 sama utk kedua mode -> 1 stream cukup; m1 tambahan khusus SND; m15 khusus Alur 2
+    streamNames.push(`${low}@kline_${SMC_TF.d1}`, `${low}@kline_${SMC_TF.h4}`, `${low}@kline_${SMC_TF.h1}`, `${low}@kline_${SMC_TF.m5}`, `${low}@kline_${SND_TF.m1}`, `${low}@kline_${SMC2_TF.m15}`);
   }
   const chunks = chunk(streamNames, STREAMS_PER_CONNECTION);
   chunks.forEach((c, idx) => openWsConnection(idx+1, c, symbolLookup));
@@ -2702,7 +2993,7 @@ function setStrategyMode(mode){
 function updateHeaderSub(){
   const pollTxt = S.pollingMode ? " | fallback polling REST aktif" : "";
   const base = STRATEGY_MODE==="SMC"
-    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | D1→H4→H1→M5`
+    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 + Alur 2: H1→M15→M5→M1`
     : `Strategi ditampilkan: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
   document.getElementById("headerSub").textContent = `${base} | (scan SND+SMC paralel)${pollTxt}`;
 }
