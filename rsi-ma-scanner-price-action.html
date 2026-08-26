@@ -1335,6 +1335,15 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
   reasons.push(`D1 & H4 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
 
+  // FIX: sama kayak Alur 2 - obEarly dihitung dari trend M5 SENDIRI (detectOrderBlock gak
+  // nerima parameter arah), jadi bisa aja masih berlawanan sama mainDir yg baru dipastikan dari
+  // D1+H4. Kalau beda arah, jangan ditampilkan sbg ilustrasi zona OB -> tanpa ini, badge bisa
+  // kelihatan BUY tapi label POI di mini chart nulis "OB SELL" (M5 emang belum align), keliatan
+  // plin-plan padahal bias induknya sendiri gak berubah. Info ketidaksearahan tetap ada di reasons.
+  if(liqExtra.ob && liqExtra.ob.direction !== mainDir){
+    liqExtra.ob = null;
+  }
+
   // --- Langkah 3: H1 pullback terhadap H4 ---
   const paH1 = analyzePriceAction(candlesH1);
   const lastH1 = candlesH1[candlesH1.length-1];
