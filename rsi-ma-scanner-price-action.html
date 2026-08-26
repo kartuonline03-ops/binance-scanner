@@ -1105,6 +1105,8 @@ function detectOrderBlock(candles){
 }
 
 const SR_CLUSTER_TOL_PCT = 0.0015; // toleransi jarak antar swing point (0.15%) biar dianggap "level yg sama"
+const SR_ZONE_BAND_PCT = 0.0006;   // lebar setengah-zona S/R yg ditampilkan (0.06%) — dibuat lebih kecil drpd
+                                    // toleransi klaster di atas, biar zona entry-nya lebih presisi/sempit
 const SR_MIN_TOUCHES = 2;          // minimal berapa kali level itu disentuh baru dianggap S/R valid
 const SR_SCAN_WINDOW = 150;        // brp candle terakhir yg dipindai cari swing point kandidat S/R
 
@@ -1121,72 +1123,74 @@ function detectSupportResistance(candles, wantDir, tradeSymbol){
   if(n < STRUCT_SWING_STRENGTH*2+10) return null;
   const price = candles[n-1].close;
   const dirsToCheck = wantDir ? [wantDir] : ["BUY","SELL"];
+  const store = tradeSymbol ? (S.smc2SrPersist[tradeSymbol] || (S.smc2SrPersist[tradeSymbol]={})) : null;
 
-  // --- cek dulu zona yg udah dipersist, masih valid (blm mitigated) & posisinya masih masuk akal ---
-  if(tradeSymbol){
-    if(!S.smc2SrPersist[tradeSymbol]) S.smc2SrPersist[tradeSymbol] = {};
-    const store = S.smc2SrPersist[tradeSymbol];
-    let bestPersisted=null, bestPersistedDist=Infinity;
-    for(const d of dirsToCheck){
-      const persisted = store[d];
-      if(!persisted) continue;
-      let mitigated=false;
-      for(let k=persisted.lastCheckedIdx+1; k<n; k++){
-        const c = candles[k];
-        if(c.low<=persisted.zoneTop && c.high>=persisted.zoneBottom){ mitigated=true; break; }
-      }
-      if(mitigated){ delete store[d]; continue; }
-      // posisi masih masuk akal: support blm ditembus ke bawah jauh, resistance blm ditembus ke atas jauh
-      const okPos = d==="BUY" ? price >= persisted.zoneBottom*0.985 : price <= persisted.zoneTop*1.015;
-      if(!okPos){ delete store[d]; continue; }
-      persisted.lastCheckedIdx = n-1; // majukan penanda supaya scan mitigasi berikutnya gak ulang dari awal
-      const dist = Math.abs(persisted.optimalEntry-price);
-      if(dist<bestPersistedDist){ bestPersistedDist=dist; bestPersisted=persisted; }
+  // cek zona yg udah dipersist utk 1 arah: masih valid (blm mitigated) & posisinya msh masuk akal?
+  // kalau mitigated/gak masuk akal lagi, dihapus dari store (supaya nanti di-scan ulang dari nol).
+  function prunePersisted(d){
+    if(!store) return null;
+    const persisted = store[d];
+    if(!persisted) return null;
+    let mitigated=false;
+    for(let k=persisted.lastCheckedIdx+1; k<n; k++){
+      const c = candles[k];
+      if(c.low<=persisted.zoneTop && c.high>=persisted.zoneBottom){ mitigated=true; break; }
     }
-    if(bestPersisted) return bestPersisted;
+    if(mitigated){ delete store[d]; return null; }
+    const okPos = d==="BUY" ? price >= persisted.zoneBottom*0.985 : price <= persisted.zoneTop*1.015;
+    if(!okPos){ delete store[d]; return null; }
+    persisted.lastCheckedIdx = n-1; // majukan penanda supaya scan mitigasi berikutnya gak ulang dari awal
+    return persisted;
   }
 
-  const winLen = Math.min(n, SR_SCAN_WINDOW);
-  const scan = candles.slice(-winLen);
-  const pts = reduceZigzag(findSwingPoints(scan, STRUCT_SWING_STRENGTH, scan.length));
-  if(!pts.length) return null;
+  // scan candle sekali aja (dipakai bareng kalau perlu cari zona BARU utk salah satu/kedua arah —
+  // misal krn arah baru habis kebalik & belum pernah ada zona tersimpan utk arah itu)
+  let clustersCache = null;
+  function clusters(){
+    if(clustersCache) return clustersCache;
+    const winLen = Math.min(n, SR_SCAN_WINDOW);
+    const scan = candles.slice(-winLen);
+    const pts = reduceZigzag(findSwingPoints(scan, STRUCT_SWING_STRENGTH, scan.length));
+    const c = [];
+    pts.forEach(p=>{
+      const found = c.find(x => x.type===p.type && Math.abs(x.level-p.price)/p.price < SR_CLUSTER_TOL_PCT);
+      if(found){ found.sum+=p.price; found.count++; found.level=found.sum/found.count; }
+      else c.push({ type:p.type, level:p.price, sum:p.price, count:1 });
+    });
+    clustersCache = c.filter(x=>x.count>=SR_MIN_TOUCHES);
+    return clustersCache;
+  }
 
-  const wantTypes = wantDir ? [wantDir==="BUY" ? "L" : "H"] : ["L","H"];
-  const candidates = pts.filter(p=>wantTypes.includes(p.type));
-  if(!candidates.length) return null;
+  // cari kandidat BARU (dari klaster swing point) khusus utk 1 arah `d`
+  function freshFor(d){
+    const wantType = d==="BUY" ? "L" : "H";
+    let best=null, bestDist=Infinity;
+    clusters().filter(c=>c.type===wantType).forEach(c=>{
+      // support HARUS di bawah/sekitar harga skrg (blm ditembus ke bawah), resistance di atas/sekitar
+      const okPos = d==="BUY" ? c.level <= price*1.008 : c.level >= price*0.992;
+      if(!okPos) return;
+      const dist = Math.abs(c.level-price);
+      if(dist<bestDist){ bestDist=dist; best=c; }
+    });
+    if(!best) return null;
+    const band = Math.max(best.level*SR_ZONE_BAND_PCT, best.level*0.0003);
+    const zoneBottom = best.level-band, zoneTop = best.level+band;
+    const result = { direction:d, zoneTop, zoneBottom, optimalEntry:(zoneTop+zoneBottom)/2, touches:best.count, mitigated:false };
+    if(store) store[d] = Object.assign({}, result, { lastCheckedIdx: n-1 });
+    return result;
+  }
 
-  // klaster level2 yg berdekatan (dlm toleransi SR_CLUSTER_TOL_PCT) jadi 1 zona per tipe
-  const clusters = [];
-  candidates.forEach(p=>{
-    const found = clusters.find(c => c.type===p.type && Math.abs(c.level-p.price)/p.price < SR_CLUSTER_TOL_PCT);
-    if(found){ found.sum+=p.price; found.count++; found.level=found.sum/found.count; }
-    else clusters.push({ type:p.type, level:p.price, sum:p.price, count:1 });
-  });
-  const valid = clusters.filter(c=>c.count>=SR_MIN_TOUCHES);
-  if(!valid.length) return null;
-
+  // utk SETIAP arah yg diminta: pakai zona lama kalau masih valid, KALAU BELUM ADA/SUDAH GAK VALID
+  // baru cari zona baru -> jadi pas arah kebalik & belum ada zona tersimpan utk arah baru itu,
+  // tetap ke-scan (gak nyangkut kepake zona arah lama selamanya).
   let best=null, bestDist=Infinity;
-  valid.forEach(c=>{
-    const dirOfZone = c.type==="L" ? "BUY" : "SELL";
-    if(wantDir && dirOfZone!==wantDir) return;
-    // support HARUS di bawah/sekitar harga skrg (blm ditembus ke bawah), resistance di atas/sekitar
-    const okPos = dirOfZone==="BUY" ? c.level <= price*1.008 : c.level >= price*0.992;
-    if(!okPos) return;
-    const dist = Math.abs(c.level-price);
-    if(dist<bestDist){ bestDist=dist; best={ ...c, direction:dirOfZone }; }
+  dirsToCheck.forEach(d=>{
+    const candidate = prunePersisted(d) || freshFor(d);
+    if(!candidate) return;
+    const dist = Math.abs(candidate.optimalEntry-price);
+    if(dist<bestDist){ bestDist=dist; best=candidate; }
   });
-  if(!best) return null;
-
-  const band = Math.max(best.level*SR_CLUSTER_TOL_PCT, best.level*0.0008);
-  const zoneBottom = best.level-band, zoneTop = best.level+band;
-  const result = {
-    direction: best.direction, zoneTop, zoneBottom, optimalEntry:(zoneTop+zoneBottom)/2,
-    touches: best.count, mitigated:false,
-  };
-  if(tradeSymbol){
-    S.smc2SrPersist[tradeSymbol][best.direction] = Object.assign({}, result, { lastCheckedIdx: n-1 });
-  }
-  return result;
+  return best;
 }
 
 /* ============================================================
