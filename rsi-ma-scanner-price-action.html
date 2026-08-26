@@ -228,7 +228,7 @@
   </div>
   <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
     <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 26/8/2026 15:29</div>
+    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 26/8/2026 15:38</div>
   </div>
 </header>
 
@@ -398,18 +398,10 @@ const SMC_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar Order Block, dlm satua
    ============================================================ */
 const SND_TF = { d1:"1d", h4:"4h", h1:"1h", m5:"5m", m1:"1m" };
 const SND_LIMIT = { d1:120, h4:150, h1:200, m5:200, m1:200 };
-// Alur 2 (SMC, "M5 saja"): SEMUA tahap (bias->arah->pullback->IDM->BOS->OB entry) dihitung
-// dari data M5 yg SAMA persis dgn Alur 1 (S.smcCandles.m5, gak ada fetch/stream tambahan
-// sama sekali) — cuma tiap tahap pakai "derajat" swing yg beda (mirip fraktal: swing besar
-// = peran bias/H1 dulu, swing kecil = peran entry/M1 dulu). Lihat analyzeSmcSetupAlt().
-const SMC2_DEGREE = {
-  bias:     { strength: 12, lookback: 180 }, // peran H1 (versi TF-shift) -> struktur paling besar
-  arah:     { strength: 7,  lookback: 100 }, // peran M15 (versi TF-shift) -> struktur menengah
-  pullback: { strength: 3,  lookback: 60  }, // peran M5-nya-M5 (versi TF-shift) -> struktur kecil, buat retracement
-  // peran M1 (versi TF-shift, tahap BOS+OB+entry) SENGAJA gak didefinisikan di sini —
-  // pakai constant ASLI sistem (STRUCT_SWING_STRENGTH/STRUCT_LOOKBACK/OB_SCAN_BACK/IND_LOOKBACK)
-  // krn itu memang derajat paling halus/presisi yg sudah ada.
-};
+// Alur 2 (SMC, entry di Support/Resistance): TF-nya SAMA PERSIS dgn Alur 1 (D1->H4->H1->M5),
+// numpang S.smcCandles yg sama — gak ada fetch/stream tambahan sama sekali. Bedanya cuma di
+// langkah terakhir: entry-nya dicari di zona S/R horizontal, bukan candle Order Block.
+// Lihat analyzeSmcSetupAlt() & detectSupportResistance().
 const SND_TRIGGER_TF = "m1";        // TF paling halus -> sumber harga live & trigger realtime utama
 const SND_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar zona S/D, dlm satuan ATR M5
 const SND_ATR_TP_MULT = 1.5;         // fallback TP (kalau blm ada zona lawan yg relevan), dlm satuan ATR M5 (diperkecil dari 3.0 -> lebih cocok scalping, TP lebih dekat/cepat kena)
@@ -449,7 +441,8 @@ const S = {
   smcIndPersistH1: {},                          // sama spt di atas, tapi utk IDM H1 (yg dipakai logika entry asli)
   // --- Alur 2 ("M5 saja", multi-degree) — numpang S.smcCandles.m5, TIDAK ada candle store sendiri ---
   smc2Results: {},
-  smc2IndPersist: {},                            // persist IND (REAL) M5 fine-grain, terpisah dari smcIndPersist alur 1
+  smc2IndPersist: {},                            // persist IND (REAL) M5, terpisah dari smcIndPersist alur 1
+  smc2IndPersistH1: {},                          // persist IDM H1, terpisah dari smcIndPersistH1 alur 1
   // --- state khusus mode SND (Supply & Demand) ---
   sndCandles: { d1:{}, h4:{}, h1:{}, m5:{}, m1:{} },  // tf -> tradeSymbol -> [candle]
   sndResults: {},                                     // display -> hasil analisa SND
@@ -1347,45 +1340,45 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   });
 }
 /* ============================================================
-   ALUR 2 — "M5 saja": SEMUA tahap (bias->arah->pullback->IDM->BOS->OB entry) dihitung dari
-   SATU data M5 yg SAMA persis dgn Alur 1 (candlesM5 = S.smcCandles.m5[symbol]). Yg beda tiap
-   tahap cuma "derajat" swing-nya (strength & lookback, lihat SMC2_DEGREE) — swing besar dulu
-   (peran bias), makin mengecil sampai swing paling halus (peran BOS/OB/entry, pakai constant
-   asli sistem). Nama field hasil DIPERTAHANKAN sama dgn analyzeSmcSetup (biasD1, dirH4, dst)
-   supaya renderSmcMiniChart/renderSmcAlurBlock/fpSmc bisa dipakai ULANG apa adanya.
+   ALUR 2 — TF SAMA PERSIS dgn Alur 1 (D1->H4->H1->M5, numpang S.smcCandles yg sama, TIDAK
+   ada fetch/stream tambahan). Bedanya cuma di langkah terakhir: bukan cari candle Order
+   Block, tapi cari zona Support/Resistance horizontal (level yg sudah disentuh berulang).
+   Tahap 1-5 (bias D1 -> arah H4 -> pullback H1 -> IDM H1 -> BOS M5) PERSIS SAMA dgn
+   analyzeSmcSetup() di atas, cuma persistensi IND dipisah (S.smc2IndPersist/H1) biar
+   riwayat kedua alur gak ketuker.
    ============================================================ */
-function analyzeSmcSetupAlt(candlesM5, tradeSymbol){
+function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol){
   const reasons = [];
   const empty = { status:"NO_SETUP", direction:null, reasons };
 
-  const minNeeded = Math.max(SMC2_DEGREE.bias.lookback, STRUCT_LOOKBACK+OB_SCAN_BACK, IND_LOOKBACK+5) + 5;
-  if(!candlesM5 || candlesM5.length < minNeeded){
-    reasons.push("Data candle M5 belum cukup untuk analisa multi-degree Alur 2.");
+  if(!candlesD1 || !candlesH4 || !candlesH1 || !candlesM5) return empty;
+  if(candlesD1.length < STRUCT_LOOKBACK || candlesH4.length < STRUCT_LOOKBACK ||
+     candlesH1.length < Math.max(STRUCT_LOOKBACK, IND_LOOKBACK+5) || candlesM5.length < STRUCT_LOOKBACK+OB_SCAN_BACK){
+    reasons.push("Data candle salah satu timeframe (D1/H4/H1/M5) belum cukup untuk analisa struktur.");
     return empty;
   }
 
-  const liq = detectLiquidityZones(candlesM5);
-  if(liq.bsl){
-    reasons.push(liq.bsl.swept
-      ? `M5 Liquidity: area BSL (buy-side) di ${fmt(liq.bsl.bottom)}-${fmt(liq.bsl.top)} sudah DISAPU ${liq.bsl.sweptBarsAgo} candle M5 lalu -> likuiditas atas sudah dimakan.`
-      : `M5 Liquidity: area BSL (buy-side) di ${fmt(liq.bsl.bottom)}-${fmt(liq.bsl.top)} dari ${liq.bsl.count} equal high M5, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  const liqD1 = detectLiquidityZones(candlesD1);
+  if(liqD1.bsl){
+    reasons.push(liqD1.bsl.swept
+      ? `D1 Liquidity: area BSL (buy-side) di ${fmt(liqD1.bsl.bottom)}-${fmt(liqD1.bsl.top)} sudah DISAPU ${liqD1.bsl.sweptBarsAgo} candle D1 lalu -> likuiditas atas sudah dimakan.`
+      : `D1 Liquidity: area BSL (buy-side) di ${fmt(liqD1.bsl.bottom)}-${fmt(liqD1.bsl.top)} dari ${liqD1.bsl.count} equal high D1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
   }
-  if(liq.ssl){
-    reasons.push(liq.ssl.swept
-      ? `M5 Liquidity: area SSL (sell-side) di ${fmt(liq.ssl.bottom)}-${fmt(liq.ssl.top)} sudah DISAPU ${liq.ssl.sweptBarsAgo} candle M5 lalu -> likuiditas bawah sudah dimakan.`
-      : `M5 Liquidity: area SSL (sell-side) di ${fmt(liq.ssl.bottom)}-${fmt(liq.ssl.top)} dari ${liq.ssl.count} equal low M5, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
+  if(liqD1.ssl){
+    reasons.push(liqD1.ssl.swept
+      ? `D1 Liquidity: area SSL (sell-side) di ${fmt(liqD1.ssl.bottom)}-${fmt(liqD1.ssl.top)} sudah DISAPU ${liqD1.ssl.sweptBarsAgo} candle D1 lalu -> likuiditas bawah sudah dimakan.`
+      : `D1 Liquidity: area SSL (sell-side) di ${fmt(liqD1.ssl.bottom)}-${fmt(liqD1.ssl.top)} dari ${liqD1.ssl.count} equal low D1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
   }
 
-  // Derajat paling halus (constant asli sistem) -> dipakai buat marker chart & BOS/OB/entry.
-  const structFine = analyzeStructure(candlesM5);
-  const indFineRaw = detectInducement(candlesM5);
+  const structM5early = analyzeStructure(candlesM5);
+  const indM5Raw = detectInducement(candlesM5);
 
-  let indFine = indFineRaw;
+  let indM5 = indM5Raw;
   if(tradeSymbol){
     if(!S.smc2IndPersist[tradeSymbol]) S.smc2IndPersist[tradeSymbol] = [];
     const hist = S.smc2IndPersist[tradeSymbol];
-    if(indFineRaw && indFineRaw.verdict==="REAL" && !hist.some(h=>h.openTime===indFineRaw.openTime)){
-      hist.push({ level:indFineRaw.level, type:indFineRaw.type, expectDir:indFineRaw.expectDir, openTime:indFineRaw.openTime });
+    if(indM5Raw && indM5Raw.verdict==="REAL" && !hist.some(h=>h.openTime===indM5Raw.openTime)){
+      hist.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime });
       if(hist.length>15) hist.shift();
     }
     if(hist.length){
@@ -1397,128 +1390,141 @@ function analyzeSmcSetupAlt(candlesM5, tradeSymbol){
         return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
       });
       const latestH = histPos[histPos.length-1];
-      indFine = { level:latestH.level, type:latestH.type, expectDir:latestH.expectDir, verdict:"REAL",
+      indM5 = { level:latestH.level, type:latestH.type, expectDir:latestH.expectDir, verdict:"REAL",
                 barsAgo: latestH.barsAgo,
-                latest: (indFineRaw && indFineRaw.verdict!=="REAL") ? { level:indFineRaw.level, verdict:indFineRaw.verdict, barsAgo:indFineRaw.barsAgo } : null,
+                latest: (indM5Raw && indM5Raw.verdict!=="REAL") ? { level:indM5Raw.level, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null,
                 history: histPos.slice(0, -1) };
     }
   }
   const srEarly = detectSupportResistance(candlesM5); // generik (blm tau arah) -> ilustrasi chart selama WAIT
 
   const liqExtra = {
-    bslZone: liq.bsl, sslZone: liq.ssl,
-    structM5Trend: structFine.trend, structM5Event: structFine.event,
-    structM5High: structFine.swingHigh, structM5Low: structFine.swingLow,
-    indM5Level: indFine ? indFine.level : null, indM5Type: indFine ? indFine.type : null,
-    indM5Verdict: indFine ? indFine.verdict : null, indM5BarsAgo: indFine ? indFine.barsAgo : null,
-    indM5LatestLevel: indFine && indFine.latest ? indFine.latest.level : null,
-    indM5LatestVerdict: indFine && indFine.latest ? indFine.latest.verdict : null,
-    indM5LatestBarsAgo: indFine && indFine.latest ? indFine.latest.barsAgo : null,
-    indM5History: indFine && indFine.history ? indFine.history : [],
+    bslZone: liqD1.bsl, sslZone: liqD1.ssl,
+    structM5Trend: structM5early.trend, structM5Event: structM5early.event,
+    structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
+    indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
+    indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
+    indM5LatestLevel: indM5 && indM5.latest ? indM5.latest.level : null,
+    indM5LatestVerdict: indM5 && indM5.latest ? indM5.latest.verdict : null,
+    indM5LatestBarsAgo: indM5 && indM5.latest ? indM5.latest.barsAgo : null,
+    indM5History: indM5 && indM5.history ? indM5.history : [],
     ob: srEarly,
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 
-  // --- Langkah 1: bias, derajat swing PALING BESAR (peran H1/D1 versi TF-shift) ---
-  const structBias = analyzeStructure(candlesM5, SMC2_DEGREE.bias.strength, SMC2_DEGREE.bias.lookback);
-  const biasD1 = structBias.trend || "RANGING";
-  reasons.push(`M5 (swing besar): bias ${biasLabel(structBias.trend)} (swing high ${fmt(structBias.swingHigh)} / swing low ${fmt(structBias.swingLow)})`);
+  // --- Langkah 1: bias D1 ---
+  const structD1 = analyzeStructure(candlesD1);
+  const biasD1 = structD1.trend || "RANGING";
+  reasons.push(`D1: bias ${biasLabel(structD1.trend)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
   if(biasD1==="RANGING"){
-    reasons.push("M5 (swing besar) belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
+    reasons.push("D1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
     return Object.assign({}, empty, liqExtra, { biasD1 });
   }
 
-  // --- Langkah 2: arah, derajat swing MENENGAH (peran M15/H4 versi TF-shift), harus searah bias ---
-  const structArah = analyzeStructure(candlesM5, SMC2_DEGREE.arah.strength, SMC2_DEGREE.arah.lookback);
-  const dirH4 = structArah.trend;
-  reasons.push(`M5 (swing menengah): arah ${biasLabel(dirH4)} (swing high ${fmt(structArah.swingHigh)} / swing low ${fmt(structArah.swingLow)})`);
+  // --- Langkah 2: arah H4, harus searah bias D1 ---
+  const structH4 = analyzeStructure(candlesH4);
+  const dirH4 = structH4.trend;
+  reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
   if(!dirH4 || dirH4 !== biasD1){
-    reasons.push(`Swing menengah tidak searah dengan bias swing besar (${biasLabel(biasD1)}) -> tunggu align dulu, jangan cari entry.`);
+    reasons.push(`H4 tidak searah dengan bias D1 (${biasLabel(biasD1)}) -> tunggu H4 align dulu, jangan cari entry.`);
     return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
   }
   const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
-  reasons.push(`Swing besar & menengah searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
+  reasons.push(`D1 & H4 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
 
-  // --- Langkah 3: pullback, derajat swing KECIL (peran M5/H1 versi TF-shift) ---
-  const swPullback = findSwingLevels(candlesM5, SMC2_DEGREE.pullback.lookback, SMC2_DEGREE.pullback.strength);
-  const lastM5 = candlesM5[candlesM5.length-1];
-  const corrM5 = (swPullback.swingHigh!==null && swPullback.swingLow!==null)
-    ? classifyCorrection({ swingHigh:swPullback.swingHigh, swingLow:swPullback.swingLow }, lastM5, mainDir) : null;
-  const hasPullback = !!(corrM5 && corrM5.retracePct > 0.1);
+  // --- Langkah 3: H1 pullback terhadap H4 ---
+  const paH1 = analyzePriceAction(candlesH1);
+  const lastH1 = candlesH1[candlesH1.length-1];
+  const corrH1 = (paH1.swingHigh!==null && paH1.swingLow!==null) ? classifyCorrection(paH1, lastH1, mainDir) : null;
+  const hasPullback = !!(corrH1 && corrH1.retracePct > 0.1);
   if(!hasPullback){
-    reasons.push("Swing kecil belum terlihat pullback/retracement yang berarti terhadap swing menengah -> tunggu koreksi dulu sebelum cari entry.");
+    reasons.push("H1 belum terlihat pullback/retracement yang berarti terhadap H4 -> tunggu koreksi dulu sebelum cari entry.");
     return Object.assign({}, empty, liqExtra, { biasD1, dirH4, hasPullback:false });
   }
-  reasons.push(`Swing kecil: sedang pullback ~${fmt(corrM5.retracePct*100,0)}% dari swing terakhir (searah koreksi vs swing menengah ${biasLabel(dirH4)})`);
+  reasons.push(`H1: sedang pullback ~${fmt(corrH1.retracePct*100,0)}% dari swing terakhir (searah koreksi vs H4 ${biasLabel(dirH4)})`);
 
-  // --- Langkah 4: cek IDM (pakai IND derajat paling halus yg sudah dihitung di atas) ---
-  const idmTaken = !!(indFine && indFine.expectDir===mainDir && indFine.verdict!=="FAKE");
+  // --- Langkah 4: cek IDM di H1 sudah diambil / belum (persistensi terpisah dari Alur 1) ---
+  const indH1Raw = detectInducement(candlesH1);
+  let indH1 = indH1Raw;
+  if(tradeSymbol){
+    const persistedH1 = S.smc2IndPersistH1[tradeSymbol];
+    if(indH1Raw && indH1Raw.verdict==="REAL"){
+      S.smc2IndPersistH1[tradeSymbol] = { level:indH1Raw.level, type:indH1Raw.type, expectDir:indH1Raw.expectDir, openTime:indH1Raw.openTime };
+    }else if(persistedH1 && persistedH1.expectDir===mainDir){
+      let barsAgo = null;
+      for(let i=candlesH1.length-1; i>=0; i--){
+        if(candlesH1[i].openTime===persistedH1.openTime){ barsAgo=(candlesH1.length-1-i); break; }
+      }
+      indH1 = { level:persistedH1.level, type:persistedH1.type, expectDir:persistedH1.expectDir, verdict:"REAL", barsAgo };
+    }
+  }
+  const idmTaken = !!(indH1 && indH1.expectDir===mainDir && indH1.verdict!=="FAKE");
   if(!idmTaken){
-    if(indFine && indFine.expectDir===mainDir && indFine.verdict==="FAKE"){
-      reasons.push("M5: level liquidity minor sempat kesentuh tapi ternyata FAKE (bukan trap, lanjut breakout) -> bukan IDM valid, tunggu setup baru.");
+    if(indH1 && indH1.expectDir===mainDir && indH1.verdict==="FAKE"){
+      reasons.push("H1: level liquidity minor sempat kesentuh tapi ternyata FAKE (bukan trap, lanjut breakout) -> bukan IDM valid, tunggu setup baru.");
     }else{
-      reasons.push("M5: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
+      reasons.push("H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
     }
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
   }
-  reasons.push(`M5: IDM sudah diambil (sweep ${indFine.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indFine.verdict}) -> boleh mulai cari trigger entry.`);
+  reasons.push(`H1: IDM sudah diambil (sweep ${indH1.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indH1.verdict}) -> boleh mulai cari trigger entry di M5.`);
 
-  // --- Langkah 5: BOS di derajat paling halus (peran M1/M5 versi TF-shift) ---
-  const bosOk = structFine.trend===dirH4 && structFine.event==="BOS";
+  // --- Langkah 5: M5 cari BOS searah H1 & H4 ---
+  const structM5 = analyzeStructure(candlesM5);
+  const bosOk = structM5.trend===dirH4 && structM5.event==="BOS";
   if(!bosOk){
-    reasons.push(structFine.event==="CHOCH"
+    reasons.push(structM5.event==="CHOCH"
       ? "M5: yang muncul CHoCH (potensi pembalikan), bukan BOS searah rencana -> tunggu, jangan masuk dulu."
-      : "M5: belum ada BOS (Break of Structure) yang searah swing menengah -> tunggu momentum pecah searah dulu.");
+      : "M5: belum ada BOS (Break of Structure) yang searah H1/H4 -> tunggu momentum M5 pecah searah dulu.");
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, direction:mainDir });
   }
-  reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur halus sudah pecah mengikuti swing menengah.`);
+  reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti H1/H4.`);
 
-  // --- Langkah 6: Support/Resistance (level yg disentuh berulang) sbg area entry ---
+  // --- Langkah 6: Support/Resistance (bukan Order Block) sbg area entry ---
   const srM = detectSupportResistance(candlesM5, mainDir);
   if(!srM){
     reasons.push(`M5: BOS sudah ada tapi belum ketemu level ${mainDir==="BUY"?"Support":"Resistance"} yang valid (min ${SR_MIN_TOUCHES}x disentuh) searah rencana -> tunggu konfirmasi lanjutan.`);
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
   }
-  const obM = srM;
+  const obM5 = srM;
 
-  const atrArr = calcAtr(candlesM5, ATR_PERIOD);
-  let atr = null;
-  for(let i=atrArr.length-1;i>=0;i--){ if(atrArr[i]!==null){ atr=atrArr[i]; break; } }
-  const buffer = (atr!==null ? atr : (obM.zoneTop-obM.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
-  const entry = obM.optimalEntry;
+  const atrArrM5 = calcAtr(candlesM5, ATR_PERIOD);
+  let atrM5 = null;
+  for(let i=atrArrM5.length-1;i>=0;i--){ if(atrArrM5[i]!==null){ atrM5=atrArrM5[i]; break; } }
+  const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
+  const entry = obM5.optimalEntry;
   let stopLoss, takeProfit, tpLevel;
   if(mainDir==="BUY"){
-    stopLoss = obM.zoneBottom - buffer;
-    if(structArah.swingHigh!==null && structArah.swingHigh>entry){ takeProfit=structArah.swingHigh; tpLevel="swing menengah"; }
-    else { takeProfit = swPullback.swingHigh; tpLevel="swing kecil"; }
+    stopLoss = obM5.zoneBottom - buffer;
+    if(structH4.swingHigh!==null && structH4.swingHigh>entry){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
+    else { takeProfit = paH1.swingHigh; tpLevel="H1"; }
   }else{
-    stopLoss = obM.zoneTop + buffer;
-    if(structArah.swingLow!==null && structArah.swingLow<entry){ takeProfit=structArah.swingLow; tpLevel="swing menengah"; }
-    else { takeProfit = swPullback.swingLow; tpLevel="swing kecil"; }
+    stopLoss = obM5.zoneTop + buffer;
+    if(structH4.swingLow!==null && structH4.swingLow<entry){ takeProfit=structH4.swingLow; tpLevel="H4"; }
+    else { takeProfit = paH1.swingLow; tpLevel="H1"; }
   }
   const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   const srLabel = mainDir==="BUY" ? "Support" : "Resistance";
-  reasons.push(`${srLabel} M5 (${mainDir}) ketemu: zona ${fmt(obM.zoneBottom)} - ${fmt(obM.zoneTop)} (disentuh ${obM.touches}x), optimal entry (tengah zona) ${fmt(entry)}.`);
-  reasons.push(`SL ketat di luar zona ${srLabel} (${fmt(stopLoss)}), TP dibidik ke ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  reasons.push(`${srLabel} M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)} (disentuh ${obM5.touches}x), optimal entry (tengah zona) ${fmt(entry)}.`);
+  reasons.push(`SL ketat di luar zona ${srLabel} (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
 
-  const livePrice = candlesM5[candlesM5.length-1].close;
-  const gapAbs = livePrice - entry;
+  const livePriceM5 = candlesM5[candlesM5.length-1].close;
+  const gapAbs = livePriceM5 - entry;
   const gapPct = (gapAbs/entry)*100;
   const sudahLewatEntry = mainDir==="BUY" ? gapAbs>0 : gapAbs<0;
   if(Math.abs(gapPct) < 0.05){
-    reasons.push(`Harga live (${fmt(livePrice)}) masih PAS di level Entry -> siap dieksekusi langsung tanpa nunggu retest.`);
+    reasons.push(`Harga live (${fmt(livePriceM5)}) masih PAS di level Entry -> siap dieksekusi langsung tanpa nunggu retest.`);
   }else if(sudahLewatEntry){
-    reasons.push(`Harga live (${fmt(livePrice)}) sudah "lari" ${fmt(Math.abs(gapPct),2)}% dari level Entry (${fmt(entry)}) ke arah ${mainDir} -> kalau mau RR sesuai rencana, perlu tunggu retest ke level Entry; kalau market entry sekarang, RR bakal lebih kecil dari yg dihitung di atas.`);
+    reasons.push(`Harga live (${fmt(livePriceM5)}) sudah "lari" ${fmt(Math.abs(gapPct),2)}% dari level Entry (${fmt(entry)}) ke arah ${mainDir} -> kalau mau RR sesuai rencana, perlu tunggu retest ke level Entry; kalau market entry sekarang, RR bakal lebih kecil dari yg dihitung di atas.`);
   }else{
-    reasons.push(`Harga live (${fmt(livePrice)}) malah ${fmt(Math.abs(gapPct),2)}% di SISI BERLAWANAN dari level Entry (${fmt(entry)}) -> harga sudah "kebablasan" balik ke arah zona ${srLabel}, entry di level ini lebih dekat/mudah kena kalau limit order.`);
+    reasons.push(`Harga live (${fmt(livePriceM5)}) malah ${fmt(Math.abs(gapPct),2)}% di SISI BERLAWANAN dari level Entry (${fmt(entry)}) -> harga sudah "kebablasan" balik ke arah zona ${srLabel}, entry di level ini lebih dekat/mudah kena kalau limit order.`);
   }
 
   return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
-    ob: obM, entry, stopLoss, takeProfit, tpLevel, rr, atrM5: atr,
-    structD1: structBias, structH4: structArah, structH1: { trend:null, event:null, swingHigh:swPullback.swingHigh, swingLow:swPullback.swingLow },
-    reasons,
+    ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
+    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
   });
 }
 function recomputeSmc(tradeSymbol, display){
@@ -1537,13 +1543,15 @@ function recomputeSmc(tradeSymbol, display){
   scheduleRedraw();
 }
 
-// Alur 2 ("M5 saja"): numpang PERSIS data candle m5 yg sama dgn Alur 1 (S.smcCandles.m5) —
-// gak ada fetch/stream/state candle sendiri. Makanya cukup dipanggil dari dalam recomputeSmc()
-// di atas, otomatis ke-trigger kapanpun m5 alur 1 diupdate (WS close, polling, atau baseline).
+// Alur 2 (TF sama persis dgn Alur 1: D1/H4/H1/M5): numpang PERSIS S.smcCandles yg sama —
+// gak ada fetch/stream/state candle sendiri sama sekali. Makanya cukup dipanggil dari dalam
+// recomputeSmc() di atas, otomatis ke-trigger kapanpun candle Alur 1 diupdate (WS close,
+// polling, atau baseline) — gak peduli TF mana yg closed (d1/h4/h1/m5 semua relevan).
 function recomputeSmc2(tradeSymbol, display){
-  const m5 = S.smcCandles.m5[tradeSymbol];
+  const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
+        h1 = S.smcCandles.h1[tradeSymbol], m5 = S.smcCandles.m5[tradeSymbol];
   if(!m5 || !m5.length) return;
-  const setup = analyzeSmcSetupAlt(m5, tradeSymbol);
+  const setup = analyzeSmcSetupAlt(d1, h4, h1, m5, tradeSymbol);
   setup.symbol = display;
   setup.price = m5[m5.length-1].close;
   S.smc2Results[display] = setup;
@@ -2519,7 +2527,7 @@ function renderSmcAlurBlock(r, chartKey, cfg, kind){
 }
 
 const SMC_ALUR1_CFG = { topLabel:"D1", midLabel:"H4", lowLabel:"H1", execLabel:"M5", flowLabel:"D1→H4→H1→M5", flowHeading:"Alur 1 — D1→H4→H1→M5" };
-const SMC_ALUR2_CFG = { topLabel:"M5-besar", midLabel:"M5-menengah", lowLabel:"M5-kecil", execLabel:"M5", obLabel:"S/R", flowLabel:"M5 saja (multi-degree, entry di S/R)", flowHeading:"Alur 2 — M5 saja (entry di Support/Resistance)" };
+const SMC_ALUR2_CFG = { topLabel:"D1", midLabel:"H4", lowLabel:"H1", execLabel:"M5", obLabel:"S/R", flowLabel:"D1→H4→H1→M5 (entry di S/R)", flowHeading:"Alur 2 — D1→H4→H1→M5 (entry di Support/Resistance)" };
 
 function buildSmcCard(r, kind){
   const div = document.createElement("div");
@@ -2870,7 +2878,7 @@ async function startScan(){
   // lintas pergeseran jendela candle. Cuma direset kalau memang di-clear manual/reload halaman.
   S.sndCandles={ d1:{}, h4:{}, h1:{}, m5:{}, m1:{} }; S.sndResults={};
   S.smc2Results={}; // Alur 2 numpang S.smcCandles.m5, gak ada candle store sendiri yg perlu direset
-  // S.smc2IndPersist SENGAJA TIDAK direset, sama alasannya spt smcIndPersist di atas.
+  // S.smc2IndPersist & S.smc2IndPersistH1 SENGAJA TIDAK direset, sama alasannya spt smcIndPersist di atas.
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
   render();
@@ -3013,7 +3021,7 @@ function setStrategyMode(mode){
 function updateHeaderSub(){
   const pollTxt = S.pollingMode ? " | fallback polling REST aktif" : "";
   const base = STRATEGY_MODE==="SMC"
-    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 (OB) + Alur 2: M5 saja (entry di S/R)`
+    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 (OB) + Alur 2: D1→H4→H1→M5 (S/R)`
     : `Strategi ditampilkan: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
   document.getElementById("headerSub").textContent = `${base} | (scan SND+SMC paralel)${pollTxt}`;
 }
