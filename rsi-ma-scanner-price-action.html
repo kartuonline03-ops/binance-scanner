@@ -39,6 +39,14 @@
   header.top .status-pill.off{color:var(--sell); border-color:#f6465d44;}
   header.top .status-pill.poll{color:var(--amber); border-color:#f0b90b55; background:#f0b90b14;}
 
+  #headerInfo.hidden-info{display:none;}
+  #headerToggleBtn{
+    font-family:var(--mono); font-size:13px; color:var(--dim); background:transparent;
+    border:1px solid var(--border); border-radius:6px; width:26px; height:26px; line-height:1;
+    cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  }
+  #headerToggleBtn:hover{color:var(--text); border-color:var(--dim2);}
+
   main{max-width:1180px; margin:0 auto; padding:18px;}
 
   .panel{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px;}
@@ -219,17 +227,20 @@
 <body>
 
 <header class="top">
-  <div class="brand">
-    <span class="dot" id="liveDot"></span>
-    <div>
-      <h1>Binance Signal Scanner</h1>
-      <div class="sub" id="headerSub">Tab SMC & SND cuma ganti tampilan — keduanya di-scan paralel begitu ditekan Mulai</div>
+  <div id="headerInfo" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex:1; min-width:0;">
+    <div class="brand">
+      <span class="dot" id="liveDot"></span>
+      <div>
+        <h1>Binance Signal Scanner</h1>
+        <div class="sub" id="headerSub">Tab SMC & SND cuma ganti tampilan — keduanya di-scan paralel begitu ditekan Mulai</div>
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+      <div class="status-pill off" id="wsPill">WS: OFF</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 26/8/2026 15:38</div>
     </div>
   </div>
-  <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
-    <div class="status-pill off" id="wsPill">WS: OFF</div>
-    <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 26/8/2026 15:38</div>
-  </div>
+  <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
 </header>
 
 <main>
@@ -362,6 +373,27 @@
 <script>
 (function(){
 "use strict";
+
+/* ============================================================
+   TOGGLE INFO HEADER (judul/deskripsi/mode/revisi)
+   ============================================================ */
+(function(){
+  const btn = document.getElementById("headerToggleBtn");
+  const info = document.getElementById("headerInfo");
+  if(!btn || !info) return;
+  let hidden = false;
+  try{ hidden = localStorage.getItem("headerInfoHidden") === "1"; }catch(e){}
+  function apply(){
+    info.classList.toggle("hidden-info", hidden);
+    btn.textContent = hidden ? "▼" : "▲";
+  }
+  apply();
+  btn.addEventListener("click", function(){
+    hidden = !hidden;
+    apply();
+    try{ localStorage.setItem("headerInfoHidden", hidden ? "1" : "0"); }catch(e){}
+  });
+})();
 
 /* ============================================================
    KONSTANTA UMUM
