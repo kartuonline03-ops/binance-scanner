@@ -1570,6 +1570,13 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     reasons.push(`H1 -> arah dibidik: ${mainDir}`);
   }
 
+  // FIX: begitu mainDir udah pasti (BUY/SELL), timpa "ob" ilustrasi yg tadinya dihitung generik
+  // (blm tau arah, bisa nyasar ke sisi berlawanan) dgn versi SEARAH mainDir. Tanpa ini, zona yg
+  // ditampilkan di chart selama status masih WAIT bisa keliatan plin-plan gonta-ganti BUY<->SELL
+  // tiap harga gerak dikit, padahal bias induk (D1/H4/H1) sendiri sama sekali belum berubah.
+  const srDirEarly = detectSupportResistance(candlesM5, mainDir, persistKey);
+  if(srDirEarly) liqExtra.ob = srDirEarly;
+
   // --- Langkah 3: H1 pullback terhadap H4 (cuma relevan kalau H4 masih dipakai sbg acuan;
   // kalau biasStartTf="H1", H4 dilewati jadi gak ada acuan pullback -> langsung lanjut ke IDM) ---
   const paH1 = analyzePriceAction(candlesH1);
