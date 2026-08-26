@@ -284,10 +284,20 @@
         </div>
       </div>
       <div id="smcFields" style="display:none; grid-column:1 / -1;">
+        <div class="field">
+          <label>Mulai bias dari (Alur 2)</label>
+          <select id="cfgSmcBiasStart">
+            <option value="D1" selected>D1 → H4 → H1 (default, paling ketat)</option>
+            <option value="H4">H4 → H1 (skip D1, lebih sering ada sinyal)</option>
+            <option value="H1">H1 saja (skip D1 & H4, paling sering — cocok scalping)</option>
+          </select>
+        </div>
         <div class="cfg-note" style="margin:0 0 4px;">
           Mode SMC Multi-TF pakai timeframe TETAP mengikuti alur top-down: <b>D1</b> (bias) → <b>H4</b> (arah menengah)
-          → <b>H1</b> (pullback + cek inducement/liquidity) → <b>M5</b> (BOS + Order Block utk entry). Timeframe di atas
-          otomatis dinonaktifkan selama mode ini aktif.
+          → <b>H1</b> (pullback + cek inducement/liquidity) → <b>M5</b> (BOS + Order Block utk entry, Alur 1) / BOS + S/R
+          (Alur 2). Timeframe di atas otomatis dinonaktifkan selama mode ini aktif. Pengaturan "Mulai bias dari" HANYA
+          berlaku utk <b>Alur 2</b> (entry di Support/Resistance) — Alur 1 (Order Block) tetap selalu full D1→H4→H1→M5,
+          gak bisa dipangkas.
         </div>
       </div>
 
@@ -1414,11 +1424,20 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
    ALUR 2 — TF SAMA PERSIS dgn Alur 1 (D1->H4->H1->M5, numpang S.smcCandles yg sama, TIDAK
    ada fetch/stream tambahan). Bedanya cuma di langkah terakhir: bukan cari candle Order
    Block, tapi cari zona Support/Resistance horizontal (level yg sudah disentuh berulang).
-   Tahap 1-5 (bias D1 -> arah H4 -> pullback H1 -> IDM H1 -> BOS M5) PERSIS SAMA dgn
+   Tahap 1-5 (bias D1 -> arah H4 -> pullback H1 -> IDM H1 -> BOS M5) SAMA KONSEPNYA dgn
    analyzeSmcSetup() di atas, cuma persistensi IND dipisah (S.smc2IndPersist/H1) biar
    riwayat kedua alur gak ketuker.
+   biasStartTf ("D1"/"H4"/"H1", default "D1"): sama spt "Mulai bias dari" di mode SND —
+   khusus dipakai Alur 2 aja, Alur 1 (analyzeSmcSetup di atas) TETAP selalu full D1->H4->H1->M5.
+   - "D1": penuh, D1 (bias) -> H4 (harus align D1) -> H1 (pullback thd H4) -> IDM H1 -> BOS M5.
+   - "H4": D1 dilewati, H4 langsung jadi bias/arah -> H1 (pullback thd H4) -> IDM H1 -> BOS M5.
+   - "H1": D1 & H4 dilewati, H1 langsung jadi bias/arah (gak ada pullback thd H4 lagi,
+     krn H4 sbg acuan pullback-nya sendiri dilewati) -> langsung IDM H1 -> BOS M5.
+   structD1/structH4 di bawah TETAP selalu dihitung apapun modenya (data sudah ada, numpang
+   S.smcCandles yg sama) -> dipakai sbg info/fallback TP walau gak dipakai buat gating arah.
    ============================================================ */
-function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol){
+function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol, biasStartTf){
+  biasStartTf = biasStartTf || "D1";
   const reasons = [];
   const empty = { status:"NO_SETUP", direction:null, reasons };
 
@@ -1483,36 +1502,65 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
 
-  // --- Langkah 1: bias D1 ---
+  // --- Langkah 1 & 2: tentukan bias/arah, sesuai TF awal yg dipilih (biasStartTf) ---
+  // structD1/structH4/dirH1dir dihitung SELALU (data numpang S.smcCandles yg sama, gak nambah
+  // beban fetch) -> structD1/structH4 tetap kepake sbg info/fallback TP di langkah akhir nanti.
   const structD1 = analyzeStructure(candlesD1);
   const biasD1 = structD1.trend || "RANGING";
-  reasons.push(`D1: bias ${biasLabel(structD1.trend)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
-  if(biasD1==="RANGING"){
-    reasons.push("D1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
-    return Object.assign({}, empty, liqExtra, { biasD1 });
-  }
-
-  // --- Langkah 2: arah H4, harus searah bias D1 ---
   const structH4 = analyzeStructure(candlesH4);
   const dirH4 = structH4.trend;
-  reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
-  if(!dirH4 || dirH4 !== biasD1){
-    reasons.push(`H4 tidak searah dengan bias D1 (${biasLabel(biasD1)}) -> tunggu H4 align dulu, jangan cari entry.`);
-    return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
-  }
-  const mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
-  reasons.push(`D1 & H4 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
+  const structH1dir = analyzeStructure(candlesH1);
+  const dirH1 = structH1dir.trend;
+  let mainDir;
 
-  // --- Langkah 3: H1 pullback terhadap H4 ---
-  const paH1 = analyzePriceAction(candlesH1);
-  const lastH1 = candlesH1[candlesH1.length-1];
-  const corrH1 = (paH1.swingHigh!==null && paH1.swingLow!==null) ? classifyCorrection(paH1, lastH1, mainDir) : null;
-  const hasPullback = !!(corrH1 && corrH1.retracePct > 0.1);
-  if(!hasPullback){
-    reasons.push("H1 belum terlihat pullback/retracement yang berarti terhadap H4 -> tunggu koreksi dulu sebelum cari entry.");
-    return Object.assign({}, empty, liqExtra, { biasD1, dirH4, hasPullback:false });
+  if(biasStartTf==="D1"){
+    reasons.push(`D1: bias ${biasLabel(structD1.trend)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
+    if(biasD1==="RANGING"){
+      reasons.push("D1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> tidak ada bias induk, skip dulu.");
+      return Object.assign({}, empty, liqExtra, { biasD1 });
+    }
+    reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
+    if(!dirH4 || dirH4 !== biasD1){
+      reasons.push(`H4 tidak searah dengan bias D1 (${biasLabel(biasD1)}) -> tunggu H4 align dulu, jangan cari entry.`);
+      return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+    }
+    mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+    reasons.push(`D1 & H4 searah (${biasLabel(dirH4)}) -> arah dibidik: ${mainDir}`);
+  }else if(biasStartTf==="H4"){
+    reasons.push("Pengaturan Alur 2: bias dimulai dari H4 (D1 dilewati).");
+    reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
+    if(!dirH4 || (dirH4!=="BULLISH" && dirH4!=="BEARISH")){
+      reasons.push("H4 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> belum ada bias arah yang valid, skip dulu.");
+      return Object.assign({}, empty, liqExtra, { biasD1, dirH4 });
+    }
+    mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
+    reasons.push(`H4 -> arah dibidik: ${mainDir}`);
+  }else{ // "H1"
+    reasons.push("Pengaturan Alur 2: bias dimulai dari H1 saja (D1 & H4 dilewati -> paling longgar/cepat).");
+    reasons.push(`H1: arah ${biasLabel(dirH1)} (swing high ${fmt(structH1dir.swingHigh)} / swing low ${fmt(structH1dir.swingLow)})`);
+    if(!dirH1 || (dirH1!=="BULLISH" && dirH1!=="BEARISH")){
+      reasons.push("H1 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> belum ada bias arah yang valid, skip dulu.");
+      return Object.assign({}, empty, liqExtra, { biasD1, dirH4, dirH1 });
+    }
+    mainDir = dirH1==="BULLISH" ? "BUY" : "SELL";
+    reasons.push(`H1 -> arah dibidik: ${mainDir}`);
   }
-  reasons.push(`H1: sedang pullback ~${fmt(corrH1.retracePct*100,0)}% dari swing terakhir (searah koreksi vs H4 ${biasLabel(dirH4)})`);
+
+  // --- Langkah 3: H1 pullback terhadap H4 (cuma relevan kalau H4 masih dipakai sbg acuan;
+  // kalau biasStartTf="H1", H4 dilewati jadi gak ada acuan pullback -> langsung lanjut ke IDM) ---
+  const paH1 = analyzePriceAction(candlesH1);
+  if(biasStartTf!=="H1"){
+    const lastH1 = candlesH1[candlesH1.length-1];
+    const corrH1 = (paH1.swingHigh!==null && paH1.swingLow!==null) ? classifyCorrection(paH1, lastH1, mainDir) : null;
+    const hasPullback = !!(corrH1 && corrH1.retracePct > 0.1);
+    if(!hasPullback){
+      reasons.push("H1 belum terlihat pullback/retracement yang berarti terhadap H4 -> tunggu koreksi dulu sebelum cari entry.");
+      return Object.assign({}, empty, liqExtra, { biasD1, dirH4, dirH1, hasPullback:false });
+    }
+    reasons.push(`H1: sedang pullback ~${fmt(corrH1.retracePct*100,0)}% dari swing terakhir (searah koreksi vs H4 ${biasLabel(dirH4)})`);
+  }else{
+    reasons.push("H1 langsung dipakai sbg bias -> cek pullback thd H4 dilewati (H4 gak dipakai di mode ini).");
+  }
 
   // --- Langkah 4: cek IDM di H1 sudah diambil / belum (persistensi terpisah dari Alur 1) ---
   const indH1Raw = detectInducement(candlesH1);
@@ -1536,26 +1584,28 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     }else{
       reasons.push("H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
     }
-    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, hasPullback:true, idmTaken:false, direction:mainDir });
   }
   reasons.push(`H1: IDM sudah diambil (sweep ${indH1.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indH1.verdict}) -> boleh mulai cari trigger entry di M5.`);
 
-  // --- Langkah 5: M5 cari BOS searah H1 & H4 ---
+  // --- Langkah 5: M5 cari BOS searah rencana (mainDir) ---
+  // Pakai mainDir (bukan dirH4 langsung) supaya tetap benar di mode "H1" (dirH4 gak dipakai gating).
+  const trendMain = mainDir==="BUY" ? "BULLISH" : "BEARISH";
   const structM5 = analyzeStructure(candlesM5);
-  const bosOk = structM5.trend===dirH4 && structM5.event==="BOS";
+  const bosOk = structM5.trend===trendMain && structM5.event==="BOS";
   if(!bosOk){
     reasons.push(structM5.event==="CHOCH"
       ? "M5: yang muncul CHoCH (potensi pembalikan), bukan BOS searah rencana -> tunggu, jangan masuk dulu."
-      : "M5: belum ada BOS (Break of Structure) yang searah H1/H4 -> tunggu momentum M5 pecah searah dulu.");
-    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, direction:mainDir });
+      : "M5: belum ada BOS (Break of Structure) yang searah rencana -> tunggu momentum M5 pecah searah dulu.");
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, hasPullback:true, idmTaken:true, direction:mainDir });
   }
-  reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti H1/H4.`);
+  reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti rencana.`);
 
   // --- Langkah 6: Support/Resistance (bukan Order Block) sbg area entry ---
   const srM = detectSupportResistance(candlesM5, mainDir, tradeSymbol);
   if(!srM){
     reasons.push(`M5: BOS sudah ada tapi belum ketemu level ${mainDir==="BUY"?"Support":"Resistance"} yang valid (min ${SR_MIN_TOUCHES}x disentuh) searah rencana -> tunggu konfirmasi lanjutan.`);
-    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
   }
   const obM5 = srM;
 
@@ -1593,7 +1643,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
 
   return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
-    direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
+    direction: mainDir, biasD1, dirH4, dirH1, hasPullback:true, idmTaken:true, bosM5:true,
     ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
     structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
   });
@@ -1622,7 +1672,7 @@ function recomputeSmc2(tradeSymbol, display){
   const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
         h1 = S.smcCandles.h1[tradeSymbol], m5 = S.smcCandles.m5[tradeSymbol];
   if(!m5 || !m5.length) return;
-  const setup = analyzeSmcSetupAlt(d1, h4, h1, m5, tradeSymbol);
+  const setup = analyzeSmcSetupAlt(d1, h4, h1, m5, tradeSymbol, CFG ? CFG.smcBiasStart : "D1");
   setup.symbol = display;
   setup.price = m5[m5.length-1].close;
   S.smc2Results[display] = setup;
@@ -2512,7 +2562,7 @@ function renderSndMiniChart(r, chartKey){
    status pullback/IDM H1, BOS M5, Order Block, dan entry/SL/TP.
    ============================================================ */
 // cfg = { topLabel, midLabel, lowLabel, execLabel, flowLabel, flowHeading }
-// Blok inilah yg dipakai ULANG utk Alur 1 (D1→H4→H1→M5) & Alur 2 (H1→M15→M5→M1) — isinya
+// Blok inilah yg dipakai ULANG utk Alur 1 (D1→H4→H1→M5) & Alur 2 (D1→H4→H1→M5, entry di S/R) — isinya
 // sama persis, cuma teks label & sumber data (r) yg beda tergantung alur mana yg dirender.
 function renderSmcAlurBlock(r, chartKey, cfg, kind){
   const wrap = document.createElement("div"); wrap.className = "smc-alur-block";
@@ -2617,7 +2667,7 @@ function buildSmcCard(r, kind){
 
   div.appendChild(renderSmcAlurBlock(r, "smc|" + r.symbol, SMC_ALUR1_CFG, kind));
 
-  // Alur 2 (H1→M15→M5→M1) — ditampilkan sbg chart KEDUA di kartu yg sama, kalau datanya sudah siap.
+  // Alur 2 (D1→H4→H1→M5, entry di S/R) — ditampilkan sbg chart KEDUA di kartu yg sama, kalau datanya sudah siap.
   const r2 = S.smc2Results[r.symbol];
   if(r2 && r2.miniCandles && r2.miniCandles.length){
     const divider = document.createElement("div");
@@ -2921,6 +2971,7 @@ function readConfig(){
     minQuoteVolume: parseFloat(document.getElementById("cfgMinVol").value || "0"),
     sndEntryMode: document.getElementById("cfgSndEntryMode").value,
     sndBiasStart: document.getElementById("cfgSndBiasStart").value,
+    smcBiasStart: document.getElementById("cfgSmcBiasStart").value,
     manualSymbols: manualSymbols,
     strategyMode: STRATEGY_MODE,
   };
@@ -3092,7 +3143,7 @@ function setStrategyMode(mode){
 function updateHeaderSub(){
   const pollTxt = S.pollingMode ? " | fallback polling REST aktif" : "";
   const base = STRATEGY_MODE==="SMC"
-    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 (OB) + Alur 2: D1→H4→H1→M5 (S/R)`
+    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 (OB) + Alur 2: Bias:${CFG.smcBiasStart}→H1→M5 (S/R)`
     : `Strategi ditampilkan: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
   document.getElementById("headerSub").textContent = `${base} | (scan SND+SMC paralel)${pollTxt}`;
 }
@@ -3216,6 +3267,7 @@ function collectSettingsForSave(){
     minVol: document.getElementById("cfgMinVol").value,
     sndEntryMode: document.getElementById("cfgSndEntryMode").value,
     sndBiasStart: document.getElementById("cfgSndBiasStart").value,
+    smcBiasStart: document.getElementById("cfgSmcBiasStart").value,
   };
 }
 
@@ -3236,6 +3288,7 @@ function loadSettings(){
   if(saved.minVol!==undefined) document.getElementById("cfgMinVol").value = saved.minVol;
   if(saved.sndEntryMode) document.getElementById("cfgSndEntryMode").value = saved.sndEntryMode;
   if(saved.sndBiasStart) document.getElementById("cfgSndBiasStart").value = saved.sndBiasStart;
+  if(saved.smcBiasStart) document.getElementById("cfgSmcBiasStart").value = saved.smcBiasStart;
 
   if(Array.isArray(saved.coinList) && saved.coinList.length){
     COIN_LIST = saved.coinList.slice();
@@ -3252,7 +3305,7 @@ function loadSettings(){
 }
 
 // Auto-save tiap ada perubahan input konfigurasi
-["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode","cfgSndBiasStart"].forEach(id=>{
+["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode","cfgSndBiasStart","cfgSmcBiasStart"].forEach(id=>{
   document.getElementById(id).addEventListener("change", saveSettings);
 });
 document.getElementById("tabAll").addEventListener("click", saveSettings);
