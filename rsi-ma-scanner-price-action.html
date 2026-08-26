@@ -39,7 +39,6 @@
   header.top .status-pill.off{color:var(--sell); border-color:#f6465d44;}
   header.top .status-pill.poll{color:var(--amber); border-color:#f0b90b55; background:#f0b90b14;}
 
-  #headerInfo.hidden-info{display:none;}
   #headerToggleBtn{
     font-family:var(--mono); font-size:13px; color:var(--dim); background:transparent;
     border:1px solid var(--border); border-radius:6px; width:26px; height:26px; line-height:1;
@@ -384,7 +383,7 @@
   let hidden = false;
   try{ hidden = localStorage.getItem("headerInfoHidden") === "1"; }catch(e){}
   function apply(){
-    info.classList.toggle("hidden-info", hidden);
+    info.style.display = hidden ? "none" : "flex";
     btn.textContent = hidden ? "▼" : "▲";
   }
   apply();
@@ -475,6 +474,9 @@ const S = {
   smc2Results: {},
   smc2IndPersist: {},                            // persist IND (REAL) M5, terpisah dari smcIndPersist alur 1
   smc2IndPersistH1: {},                          // persist IDM H1, terpisah dari smcIndPersistH1 alur 1
+  smc2SrPersist: {},                             // tradeSymbol -> {BUY:{...zona}, SELL:{...zona}} — zona S/R
+                                                  // DIPERTAHANKAN selama belum mitigated, biar gak "lompat-lompat"
+                                                  // ke level lain tiap kali candle baru geser jendela scan.
   // --- state khusus mode SND (Supply & Demand) ---
   sndCandles: { d1:{}, h4:{}, h1:{}, m5:{}, m1:{} },  // tf -> tradeSymbol -> [candle]
   sndResults: {},                                     // display -> hasil analisa SND
@@ -1111,15 +1113,44 @@ const SR_SCAN_WINDOW = 150;        // brp candle terakhir yg dipindai cari swing
 // wantDir opsional: "BUY" -> cari level SUPPORT (dari swing low) di bawah/dekat harga skrg;
 // "SELL" -> cari RESISTANCE (dari swing high) di atas/dekat harga skrg. Kalau wantDir kosong,
 // cari yg PALING DEKAT dari kedua jenis (dipakai buat tampilan ilustratif sblm arah ketemu).
-function detectSupportResistance(candles, wantDir){
+// tradeSymbol opsional: kalau diisi, zona yg sudah ketemu DIPERTAHANKAN (persist) selama belum
+// mitigated (blm ada candle full-body nembus zona) -> zona gak "lompat-lompat" cuma gara2 jendela
+// SR_SCAN_WINDOW geser tiap candle baru & klaster lama kehilangan hitungan touch-nya.
+function detectSupportResistance(candles, wantDir, tradeSymbol){
   const n = candles.length;
   if(n < STRUCT_SWING_STRENGTH*2+10) return null;
+  const price = candles[n-1].close;
+  const dirsToCheck = wantDir ? [wantDir] : ["BUY","SELL"];
+
+  // --- cek dulu zona yg udah dipersist, masih valid (blm mitigated) & posisinya masih masuk akal ---
+  if(tradeSymbol){
+    if(!S.smc2SrPersist[tradeSymbol]) S.smc2SrPersist[tradeSymbol] = {};
+    const store = S.smc2SrPersist[tradeSymbol];
+    let bestPersisted=null, bestPersistedDist=Infinity;
+    for(const d of dirsToCheck){
+      const persisted = store[d];
+      if(!persisted) continue;
+      let mitigated=false;
+      for(let k=persisted.lastCheckedIdx+1; k<n; k++){
+        const c = candles[k];
+        if(c.low<=persisted.zoneTop && c.high>=persisted.zoneBottom){ mitigated=true; break; }
+      }
+      if(mitigated){ delete store[d]; continue; }
+      // posisi masih masuk akal: support blm ditembus ke bawah jauh, resistance blm ditembus ke atas jauh
+      const okPos = d==="BUY" ? price >= persisted.zoneBottom*0.985 : price <= persisted.zoneTop*1.015;
+      if(!okPos){ delete store[d]; continue; }
+      persisted.lastCheckedIdx = n-1; // majukan penanda supaya scan mitigasi berikutnya gak ulang dari awal
+      const dist = Math.abs(persisted.optimalEntry-price);
+      if(dist<bestPersistedDist){ bestPersistedDist=dist; bestPersisted=persisted; }
+    }
+    if(bestPersisted) return bestPersisted;
+  }
+
   const winLen = Math.min(n, SR_SCAN_WINDOW);
   const scan = candles.slice(-winLen);
   const pts = reduceZigzag(findSwingPoints(scan, STRUCT_SWING_STRENGTH, scan.length));
   if(!pts.length) return null;
 
-  const price = candles[n-1].close;
   const wantTypes = wantDir ? [wantDir==="BUY" ? "L" : "H"] : ["L","H"];
   const candidates = pts.filter(p=>wantTypes.includes(p.type));
   if(!candidates.length) return null;
@@ -1148,10 +1179,14 @@ function detectSupportResistance(candles, wantDir){
 
   const band = Math.max(best.level*SR_CLUSTER_TOL_PCT, best.level*0.0008);
   const zoneBottom = best.level-band, zoneTop = best.level+band;
-  return {
+  const result = {
     direction: best.direction, zoneTop, zoneBottom, optimalEntry:(zoneTop+zoneBottom)/2,
     touches: best.count, mitigated:false,
   };
+  if(tradeSymbol){
+    S.smc2SrPersist[tradeSymbol][best.direction] = Object.assign({}, result, { lastCheckedIdx: n-1 });
+  }
+  return result;
 }
 
 /* ============================================================
@@ -1428,7 +1463,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
                 history: histPos.slice(0, -1) };
     }
   }
-  const srEarly = detectSupportResistance(candlesM5); // generik (blm tau arah) -> ilustrasi chart selama WAIT
+  const srEarly = detectSupportResistance(candlesM5, undefined, tradeSymbol); // generik (blm tau arah) -> ilustrasi chart selama WAIT
 
   const liqExtra = {
     bslZone: liqD1.bsl, sslZone: liqD1.ssl,
@@ -1513,7 +1548,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}) -> struktur M5 sudah pecah mengikuti H1/H4.`);
 
   // --- Langkah 6: Support/Resistance (bukan Order Block) sbg area entry ---
-  const srM = detectSupportResistance(candlesM5, mainDir);
+  const srM = detectSupportResistance(candlesM5, mainDir, tradeSymbol);
   if(!srM){
     reasons.push(`M5: BOS sudah ada tapi belum ketemu level ${mainDir==="BUY"?"Support":"Resistance"} yang valid (min ${SR_MIN_TOUCHES}x disentuh) searah rencana -> tunggu konfirmasi lanjutan.`);
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
