@@ -39,12 +39,12 @@
   header.top .status-pill.off{color:var(--sell); border-color:#f6465d44;}
   header.top .status-pill.poll{color:var(--amber); border-color:#f0b90b55; background:#f0b90b14;}
 
-  #headerToggleBtn{
+  #headerToggleBtn, .toggle-btn{
     font-family:var(--mono); font-size:13px; color:var(--dim); background:transparent;
     border:1px solid var(--border); border-radius:6px; width:26px; height:26px; line-height:1;
     cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center;
   }
-  #headerToggleBtn:hover{color:var(--text); border-color:var(--dim2);}
+  #headerToggleBtn:hover, .toggle-btn:hover{color:var(--text); border-color:var(--dim2);}
 
   main{max-width:1180px; margin:0 auto; padding:18px;}
 
@@ -357,14 +357,16 @@
       </div>
     </div>
     <div class="btnrow">
-      <button class="btn-start" id="btnStart">▶ Mulai Scan</button>
-      <button class="btn-stop" id="btnStop" disabled>■ Stop</button>
+      <button class="btn-start" id="btnToggleScan">▶ Mulai Scan</button>
     </div>
   </section>
 
   <section class="panel" id="statusPanel" style="display:none;">
-    <h2>Status Koneksi</h2>
-    <div class="statusbar">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+      <h2 style="margin:0;">Status Koneksi</h2>
+      <button type="button" class="toggle-btn" id="statusToggleBtn" title="Sembunyikan/tampilkan status koneksi">▲</button>
+    </div>
+    <div class="statusbar" id="statusbarWrap">
       <div class="stat">Progress<b id="stProgress">0 / 0</b></div>
       <div class="stat">Pesan WS diterima<b id="stMsgCount">0</b></div>
       <div class="stat" id="stMsgAgeWrap">Pesan terakhir masuk<b id="stMsgAge">-</b></div>
@@ -419,6 +421,27 @@
     hidden = !hidden;
     apply();
     try{ localStorage.setItem("headerInfoHidden", hidden ? "1" : "0"); }catch(e){}
+  });
+})();
+
+/* ============================================================
+   TOGGLE PANEL STATUS KONEKSI (progress/WS/candle close dst)
+   ============================================================ */
+(function(){
+  const btn = document.getElementById("statusToggleBtn");
+  const box = document.getElementById("statusbarWrap");
+  if(!btn || !box) return;
+  let hidden = false;
+  try{ hidden = localStorage.getItem("statusPanelHidden") === "1"; }catch(e){}
+  function apply(){
+    box.style.display = hidden ? "none" : "grid";
+    btn.textContent = hidden ? "▼" : "▲";
+  }
+  apply();
+  btn.addEventListener("click", function(){
+    hidden = !hidden;
+    apply();
+    try{ localStorage.setItem("statusPanelHidden", hidden ? "1" : "0"); }catch(e){}
   });
 })();
 
@@ -2906,12 +2929,17 @@ function renderSmc(){
   const waiting = results.filter(r=>r.status==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
   const noSetup = results.filter(r=>r.status==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
 
-  const validKeys = new Set([
-    ...buys.map(r=>"buy|"+r.symbol),
-    ...sells.map(r=>"sell|"+r.symbol),
-    ...waiting.map(r=>"ongoing|"+r.symbol),
-    ...noSetup.map(r=>"analisa|"+r.symbol),
-  ]);
+  // FIX BUG: sebelumnya validKeys pakai format "kind|symbol" (buy|X, sell|X, ongoing|X,
+  // analisa|X), padahal detKey detail Alur 1/Alur 2 di buildSmcCard pakai format chartKey
+  // ("smc|X" / "smc2|X") — DUA FORMAT INI GAK PERNAH COCOK. Akibatnya S.openDetails langsung
+  // "diprune"/dihapus di render berikutnya (yg kepicu SANGAT SERING krn live price ikut
+  // fingerprint), bikin detail yg baru dibuka nutup sendiri hampir seketika saat lagi dibaca.
+  // Fix: samain formatnya ke "smc|symbol" / "smc2|symbol" persis kayak detKey aslinya.
+  const validKeys = new Set();
+  results.forEach(r=>{
+    validKeys.add("smc|"+r.symbol);
+    if(S.smc2Results[r.symbol]) validKeys.add("smc2|"+r.symbol);
+  });
   // chartKey mini-chart TIDAK lagi ikut "kind" (kategori) — cuma per simbol — biar posisi
   // scroll/zoom-nya TETAP kebawa walau status simbol pindah kategori (mis. NO_SETUP -> TUNGGU),
   // yg sebelumnya bikin chart "balik sendiri" krn dianggap chart yg beda tiap kategori berubah.
@@ -3061,8 +3089,8 @@ async function startScan(){
   }
   RUNNING = true;
   document.getElementById("cfgPanel").querySelectorAll("select,input,button").forEach(el=>el.disabled=true);
-  document.getElementById("btnStart").disabled = true;
-  document.getElementById("btnStop").disabled = false;
+  const btnToggle = document.getElementById("btnToggleScan");
+  btnToggle.textContent = "■ Stop"; btnToggle.className = "btn-stop"; btnToggle.disabled = false;
   document.getElementById("statusPanel").style.display = "block";
   document.getElementById("liveDot").classList.add("live");
   document.getElementById("wsPill").textContent = "WS: CONNECTING";
@@ -3170,8 +3198,8 @@ function stopScan(){
   S.pollingMode = false; S.wsZeroStrikes = 0;
   if(watchdogTimer){ clearInterval(watchdogTimer); watchdogTimer=null; }
   document.getElementById("cfgPanel").querySelectorAll("select,input,button").forEach(el=>el.disabled=false);
-  document.getElementById("btnStart").disabled = false;
-  document.getElementById("btnStop").disabled = true;
+  const btnToggle = document.getElementById("btnToggleScan");
+  btnToggle.textContent = "▶ Mulai Scan"; btnToggle.className = "btn-start"; btnToggle.disabled = false;
   document.getElementById("liveDot").classList.remove("live");
   document.getElementById("wsPill").textContent = "WS: OFF";
   document.getElementById("wsPill").className = "status-pill off";
@@ -3181,8 +3209,9 @@ function stopScan(){
   log("Dihentikan.", "warn");
 }
 
-document.getElementById("btnStart").addEventListener("click", startScan);
-document.getElementById("btnStop").addEventListener("click", stopScan);
+document.getElementById("btnToggleScan").addEventListener("click", ()=>{
+  if(RUNNING) stopScan(); else startScan();
+});
 
 /* ============================================================
    MENU MODE SCAN: Semua Coin vs Coin Tertentu (checklist manual)
@@ -3392,7 +3421,7 @@ document.getElementById("tabAll").addEventListener("click", saveSettings);
 document.getElementById("tabCustom").addEventListener("click", saveSettings);
 document.getElementById("btnCoinAll").addEventListener("click", saveSettings);
 document.getElementById("btnCoinNone").addEventListener("click", saveSettings);
-document.getElementById("btnStart").addEventListener("click", saveSettings);
+document.getElementById("btnToggleScan").addEventListener("click", saveSettings);
 document.getElementById("coinChecklist").addEventListener("change", (e)=>{
   if(e.target && e.target.type==="checkbox") saveSettings();
 });
@@ -3401,8 +3430,9 @@ loadSettings();
 
 // Sesuai permintaan: TIDAK perlu pencet "Mulai Scan" lagi sama sekali — cukup buka/reload
 // halaman ini, scan otomatis langsung jalan pakai config terakhir yang tersimpan.
-// Tombol "Mulai Scan" / "Stop" tetap ada & tetap berfungsi kalau mau restart manual atau
-// menghentikan sementara, tapi buka halaman = otomatis mulai scan.
+// Tombol "Mulai Scan"/"Stop" digabung jadi SATU tombol toggle (btnToggleScan) yg teksnya
+// otomatis berubah sesuai status RUNNING — tetap bisa dipakai buat restart manual atau
+// menghentikan sementara, tapi buka halaman = otomatis mulai scan tanpa perlu diklik.
 function autoStartOnLoad(){
   if(RUNNING) return;
   if(SCAN_MODE === "CUSTOM" && !document.querySelectorAll("#coinChecklist input[type=checkbox]:checked").length){
