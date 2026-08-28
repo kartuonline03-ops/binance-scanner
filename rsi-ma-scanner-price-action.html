@@ -695,6 +695,10 @@ async function pollSndSymbolOnce(item, doHtf){
       }
     }
     recomputeSnd(tradeSymbol, display);
+    // FIX: sama kayak di WS handler — M1 gak numpang jalur recomputeSmc/recomputeSmc2 di atas,
+    // jadi kalau gak dipanggil manual di sini, Alur 2 mode "M1 scalping" bakal nyangkut cuma
+    // ke-refresh pas polling M5/H1/H4 kebagian giliran (doHtf), bukan tiap M1 poll (paling sering).
+    recomputeSmc2(tradeSymbol, display);
   }catch(e){
     log(`Polling SND gagal untuk ${display}: ${e}`, "err");
   }
@@ -2068,6 +2072,11 @@ function openWsConnection(connId, streamNames, symbolLookup){
           if(sndTfKey===SND_TRIGGER_TF) S.livePrice[display] = parseFloat(k.c);
           const closed = applyKlineUpdate(list, k, SND_LIMIT[sndTfKey]);
           if(closed) recomputeSnd(tradeSymbol, display);
+          // FIX: M1 gak ada di SMC_TF (cuma d1/h4/h1/m5), jadi cabang smcTfKey di atas TIDAK PERNAH
+          // ke-trigger pas candle M1 close -> kalau Alur 2 exec TF diset "M1" (mode scalping),
+          // sinyalnya bakal nyangkut cuma ke-refresh tiap M5 close (5 menit), bukan tiap menit.
+          // Panggil recomputeSmc2() langsung di sini biar mode M1 beneran realtime per-candle M1.
+          if(sndTfKey==="m1" && closed) recomputeSmc2(tradeSymbol, display);
         }
       }catch(e){ log(`Error proses pesan WS: ${e}`, "err"); }
     };
