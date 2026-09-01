@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 26/8/2026 15:38</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 2/9/2026 06:44</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -313,6 +313,13 @@
             <option value="1">Aktif — cari sinyal LAWAN tren induk (BUKAN continuation spt Alur 1/2)</option>
           </select>
         </div>
+        <div class="field">
+          <label>Alur 4 — Murni M5 (tanpa D1/H4/H1)</label>
+          <select id="cfgSmc4Enabled">
+            <option value="0" selected>Nonaktif (default)</option>
+            <option value="1">Aktif — IDM→BOS→OB semuanya dicari di M5 saja, gak ada filter bias TF lebih tinggi</option>
+          </select>
+        </div>
         <div class="cfg-note" style="margin:0 0 4px;">
           Mode SMC Multi-TF pakai timeframe TETAP mengikuti alur top-down: <b>D1</b> (bias) → <b>H4</b> (arah menengah)
           → <b>H1</b> (pullback + cek inducement/liquidity) → <b>M5</b> (BOS + Order Block utk entry, Alur 1) / BOS + S/R
@@ -325,7 +332,10 @@
           muncul. <b>Alur 3</b> beda sendiri: Alur 1 & 2 CUMA nyari sinyal SEARAH tren induk (continuation) & sengaja
           ABAIKAN CHoCH; Alur 3 justru pakai CHoCH sbg pemicu awal nyari PEMBALIKAN arah (reversal) — butuh CHoCH lawan
           tren induk + IDM searah arah baru + BOS baru yg beneran kebentuk sblm dianggap valid. Sinyal reversal secara
-          alami lebih jarang muncul & lebih berisiko drpd continuation, makanya default-nya nonaktif.
+          alami lebih jarang muncul & lebih berisiko drpd continuation, makanya default-nya nonaktif. <b>Alur 4</b> plg
+          beda dari semua: SATU-SATUNYA alur yg gak numpang D1/H4/H1 sama sekali — bias/arah, IDM, BOS, & Order Block
+          semuanya dicari LANGSUNG di M5. Krn gak ada filter tren dari TF lebih tinggi, sinyalnya paling cepat & paling
+          sering muncul, tapi jg paling rawan false-signal — cocok utk scalping agresif, gunakan size lebih kecil.
         </div>
       </div>
 
@@ -543,6 +553,9 @@ const S = {
   smc3Pending: {},                               // tradeSymbol -> {newDir, originLevel, sinceOpenTime} CHoCH yg
                                                   // lagi "ditunggu" konfirmasinya (blm tentu jadi ENTRY)
   smc3IndPersistH1: {},                          // persist IDM H1 versi Alur 3, arahnya newDir (LAWAN Alur 1/2)
+  // --- Alur 4 (murni M5, gak ada D1/H4/H1 sama sekali) — numpang S.smcCandles.m5, TIDAK ada candle store sendiri ---
+  smc4Results: {},
+  smc4IndPersist: {},                            // persist IDM M5 versi Alur 4 (dicari LANGSUNG di M5, bukan H1)
   // --- state khusus mode SND (Supply & Demand) ---
   sndCandles: { d1:{}, h4:{}, h1:{}, m5:{}, m1:{} },  // tf -> tradeSymbol -> [candle]
   sndResults: {},                                     // display -> hasil analisa SND
@@ -1923,6 +1936,117 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
     structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
   });
 }
+/* ============================================================
+   ALUR 4 — MURNI M5, gak butuh D1/H4/H1 sama sekali (satu-satunya
+   alur yg beneran cuma numpang 1 timeframe). Semua tahapan yg di
+   Alur 1/2 dipecah ke D1/H4/H1/M5, di sini DIPERAS jadi cuma M5:
+   1) Bias/arah ditentukan dari struktur M5 itu sendiri (HH-HL/LH-LL) —
+      gak ada bias D1 ataupun cek align H4.
+   2) IDM (inducement/sweep liquidity minor) dicari LANGSUNG di M5
+      (bukan H1) — persist sendiri (S.smc4IndPersist) biar gak
+      "lupa" antar-scan, sama pola-nya spt alur lain.
+   3) BOS di M5 searah arah dari langkah 1.
+   4) Order Block M5 searah arah -> area entry (harus FRESH/belum
+      mitigated, sama spt syarat Alur 1).
+   5) TP/SL: krn gak ada H4/D1 sbg acuan lebih besar, TP dibidik ke
+      swing M5 sendiri (jendela 60 candle terakhir).
+   Alur ini PALING SEDIKIT filter dari semua alur -> paling cepat &
+   paling sering muncul sinyal, tapi jg PALING RAWAN false-signal
+   (gak ada konfirmasi tren dari TF lebih tinggi sama sekali).
+   ============================================================ */
+function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
+  const reasons = [];
+  const empty = { status:"NO_SETUP", direction:null, reasons };
+
+  if(!candlesM5 || candlesM5.length < STRUCT_LOOKBACK+OB_SCAN_BACK){
+    reasons.push("Data candle M5 belum cukup untuk analisa struktur.");
+    return empty;
+  }
+
+  const structM5 = analyzeStructure(candlesM5);
+  const obEarly = detectOrderBlock(candlesM5);
+  const liqExtra = {
+    structM5Trend: structM5.trend, structM5Event: structM5.event,
+    structM5High: structM5.swingHigh, structM5Low: structM5.swingLow,
+    ob: obEarly,
+    miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
+  };
+
+  // --- Langkah 1: bias/arah dari struktur M5 itu sendiri (SATU-SATUNYA acuan, gak ada D1/H4/H1) ---
+  reasons.push(`M5: struktur ${biasLabel(structM5.trend)} (swing high ${fmt(structM5.swingHigh)} / swing low ${fmt(structM5.swingLow)}) -> Alur 4 murni pakai M5, gak ada cek D1/H4/H1.`);
+  if(!structM5.trend){
+    reasons.push("M5 belum punya struktur HH-HL / LH-LL yang jelas (ranging) -> belum ada arah yang valid, skip dulu.");
+    return Object.assign({}, empty, liqExtra);
+  }
+  const mainDir = structM5.trend==="BULLISH" ? "BUY" : "SELL";
+
+  // --- Langkah 2: IDM dicari LANGSUNG di M5 (bukan H1), persist terpisah dari alur lain ---
+  const indM5Raw = detectInducement(candlesM5);
+  let indM5 = indM5Raw;
+  if(tradeSymbol){
+    const persisted = S.smc4IndPersist[tradeSymbol];
+    if(indM5Raw && indM5Raw.verdict==="REAL"){
+      S.smc4IndPersist[tradeSymbol] = { level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime };
+    }else if(persisted && persisted.expectDir===mainDir){
+      let barsAgo = null;
+      for(let i=candlesM5.length-1; i>=0; i--){
+        if(candlesM5[i].openTime===persisted.openTime){ barsAgo=(candlesM5.length-1-i); break; }
+      }
+      indM5 = { level:persisted.level, type:persisted.type, expectDir:persisted.expectDir, verdict:"REAL", barsAgo };
+    }
+  }
+  const idmTaken = !!(indM5 && indM5.expectDir===mainDir && indM5.verdict!=="FAKE");
+  if(!idmTaken){
+    reasons.push(`M5: IDM (sweep liquidity minor) searah ${mainDir} BELUM diambil -> tunggu dulu sblm cari BOS.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", direction:mainDir });
+  }
+  reasons.push(`M5: IDM sudah diambil (sweep ${indM5.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indM5.verdict}) -> boleh mulai cari BOS.`);
+
+  // --- Langkah 3: BOS di M5 searah mainDir ---
+  const bosOk = structM5.trend===(mainDir==="BUY"?"BULLISH":"BEARISH") && structM5.event==="BOS";
+  if(!bosOk){
+    reasons.push(structM5.event==="CHOCH"
+      ? "M5: yang muncul CHoCH (potensi pembalikan), bukan BOS searah rencana -> tunggu, jangan masuk dulu."
+      : "M5: belum ada BOS (Break of Structure) yang searah rencana -> tunggu momentum M5 pecah searah dulu.");
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", idmTaken:true, direction:mainDir });
+  }
+  reasons.push(`M5: BOS terkonfirmasi searah (${mainDir}).`);
+
+  // --- Langkah 4: Order Block M5 searah mainDir, harus FRESH (blm pernah diretest) ---
+  const obM5 = obEarly;
+  if(!obM5 || obM5.direction!==mainDir || obM5.mitigated){
+    reasons.push(!obM5 || obM5.direction!==mainDir
+      ? "M5: BOS sudah ada tapi Order Block belum ketemu / tidak searah -> tunggu konfirmasi lanjutan."
+      : "M5: Order Block yang ketemu sudah pernah diretest (mitigated) -> bukan area fresh lagi, tunggu OB baru.");
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", idmTaken:true, bosM5:true, direction:mainDir });
+  }
+
+  // --- Langkah 5: entry/SL/TP — krn gak ada H4/D1, TP dibidik ke swing M5 sendiri ---
+  const atrArrM5 = calcAtr(candlesM5, ATR_PERIOD);
+  let atrM5 = null;
+  for(let i=atrArrM5.length-1;i>=0;i--){ if(atrArrM5[i]!==null){ atrM5=atrArrM5[i]; break; } }
+  const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
+  const entry = obM5.optimalEntry;
+  let stopLoss, takeProfit;
+  if(mainDir==="BUY"){
+    stopLoss = obM5.zoneBottom - buffer;
+    takeProfit = (structM5.swingHigh!==null && structM5.swingHigh>entry) ? structM5.swingHigh : entry + (atrM5!==null?atrM5:(entry-stopLoss))*3;
+  }else{
+    stopLoss = obM5.zoneTop + buffer;
+    takeProfit = (structM5.swingLow!==null && structM5.swingLow<entry) ? structM5.swingLow : entry - (atrM5!==null?atrM5:(stopLoss-entry))*3;
+  }
+  const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
+  reasons.push(`Order Block M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
+  reasons.push(`SL di luar OB (${fmt(stopLoss)}), TP dibidik ke swing M5 terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  reasons.push("CATATAN: Alur 4 murni M5, TANPA filter bias D1/H4/H1 -> paling cepat/sering muncul sinyal, tapi jg paling rawan false-signal. Gunakan size lebih kecil / kombinasikan dgn konfirmasi lain.");
+
+  return Object.assign({}, liqExtra, {
+    status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
+    direction: mainDir, idmTaken:true, bosM5:true,
+    ob: obM5, entry, stopLoss, takeProfit, tpLevel:"M5", rr, atrM5,
+    structM5, reasons,
+  });
+}
 function recomputeSmc(tradeSymbol, display){
   const d1 = S.smcCandles.d1[tradeSymbol], h4 = S.smcCandles.h4[tradeSymbol],
         h1 = S.smcCandles.h1[tradeSymbol], m5 = S.smcCandles.m5[tradeSymbol];
@@ -1941,6 +2065,12 @@ function recomputeSmc(tradeSymbol, display){
     setup3.symbol = display;
     setup3.price = m5[m5.length-1].close;
     S.smc3Results[display] = setup3;
+  }
+  if(CFG && CFG.smc4Enabled){
+    const setup4 = analyzeSmcSetupM5Only(m5, tradeSymbol); // murni M5, gak butuh d1/h4/h1 sama sekali
+    setup4.symbol = display;
+    setup4.price = m5[m5.length-1].close;
+    S.smc4Results[display] = setup4;
   }
   scheduleRedraw();
 }
@@ -2962,6 +3092,8 @@ function smcAlur2Cfg(){
 }
 const SMC_ALUR3_CFG = { topLabel:"D1", midLabel:"H4", lowLabel:"H1", execLabel:"M5", obLabel:"OB",
   flowLabel:"CHoCH→IDM(baru)→BOS(baru)→OB", flowHeading:"Alur 3 — Reversal (CHoCH, LAWAN tren induk)" };
+const SMC_ALUR4_CFG = { execLabel:"M5", obLabel:"OB",
+  flowLabel:"M5: IDM→BOS→OB (murni M5, tanpa D1/H4/H1)", flowHeading:"Alur 4 — Murni M5 (tanpa D1/H4/H1)" };
 
 function buildSmcCard(r, kind){
   const div = document.createElement("div");
@@ -3000,6 +3132,19 @@ function buildSmcCard(r, kind){
       // nunjukin status Alur 3 sendiri (bisa beda arah/status dgn Alur 1 krn ini reversal)
       const kind3 = r3.status==="ENTRY_BUY" ? "buy" : r3.status==="ENTRY_SELL" ? "sell" : (r3.status==="WAIT" ? "ongoing" : "analisa");
       div.appendChild(renderSmcAlurBlock(r3, "smc3|" + r.symbol, SMC_ALUR3_CFG, kind3));
+    }
+  }
+
+  // Alur 4 (murni M5, tanpa D1/H4/H1) — cuma dirender kalau diaktifkan di config & datanya sudah siap.
+  if(CFG && CFG.smc4Enabled){
+    const r4 = S.smc4Results[r.symbol];
+    if(r4 && r4.miniCandles && r4.miniCandles.length){
+      const divider4 = document.createElement("div");
+      divider4.style.cssText = "margin:12px 0 6px; border-top:1px dashed #262c36;";
+      div.appendChild(divider4);
+      // kind lokal Alur 4 dipisah jg dari kind kartu, sama alasannya spt Alur 3 di atas
+      const kind4 = r4.status==="ENTRY_BUY" ? "buy" : r4.status==="ENTRY_SELL" ? "sell" : (r4.status==="WAIT" ? "ongoing" : "analisa");
+      div.appendChild(renderSmcAlurBlock(r4, "smc4|" + r.symbol, SMC_ALUR4_CFG, kind4));
     }
   }
 
@@ -3307,6 +3452,7 @@ function readConfig(){
     smc2ExecTf: document.getElementById("cfgSmc2ExecTf").value,
     smc2SkipIdm: document.getElementById("cfgSmc2SkipIdm").value === "1",
     smc3Enabled: document.getElementById("cfgSmc3Enabled").value === "1",
+    smc4Enabled: document.getElementById("cfgSmc4Enabled").value === "1",
     manualSymbols: manualSymbols,
     strategyMode: STRATEGY_MODE,
   };
@@ -3338,6 +3484,8 @@ async function startScan(){
   // S.smc2IndPersist & S.smc2IndPersistH1 SENGAJA TIDAK direset, sama alasannya spt smcIndPersist di atas.
   S.smc3Results={}; // Alur 3 jg numpang S.smcCandles yg sama, gak ada candle store sendiri
   // S.smc3Pending & S.smc3IndPersistH1 SENGAJA TIDAK direset jg, sama alasannya spt di atas.
+  S.smc4Results={}; // Alur 4 jg numpang S.smcCandles.m5 yg sama, gak ada candle store sendiri
+  // S.smc4IndPersist SENGAJA TIDAK direset jg, sama alasannya spt di atas.
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
   S.msgCount=0; S.lastMsgTime=0; S.connCount=0; S.disconnCount=0; S.closeEventCount=0; S.lastCloseInfo="-"; S.baselineDone=false; S.analyzed=0;
   render();
@@ -3481,7 +3629,7 @@ function setStrategyMode(mode){
 function updateHeaderSub(){
   const pollTxt = S.pollingMode ? " | fallback polling REST aktif" : "";
   const base = STRATEGY_MODE==="SMC"
-    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 (OB) + Alur 2: Bias:${CFG.smcBiasStart}→H1→${CFG.smc2ExecTf||"M5"} (S/R)${CFG.smc2SkipIdm?" [IDM dilewati]":""}${CFG.smc3Enabled?" + Alur 3: CHoCH→IDM→BOS (Reversal)":""}`
+    ? `Strategi ditampilkan: SMC Multi-TF | Market: ${CFG.market} | Alur 1: D1→H4→H1→M5 (OB) + Alur 2: Bias:${CFG.smcBiasStart}→H1→${CFG.smc2ExecTf||"M5"} (S/R)${CFG.smc2SkipIdm?" [IDM dilewati]":""}${CFG.smc3Enabled?" + Alur 3: CHoCH→IDM→BOS (Reversal)":""}${CFG.smc4Enabled?" + Alur 4: M5 saja (IDM→BOS→OB)":""}`
     : `Strategi ditampilkan: SND (Supply/Demand) | Market: ${CFG.market} | Bias:${CFG.sndBiasStart}→H1→(${CFG.sndEntryMode})`;
   document.getElementById("headerSub").textContent = `${base} | (scan SND+SMC paralel)${pollTxt}`;
 }
@@ -3609,6 +3757,7 @@ function collectSettingsForSave(){
     smc2ExecTf: document.getElementById("cfgSmc2ExecTf").value,
     smc2SkipIdm: document.getElementById("cfgSmc2SkipIdm").value,
     smc3Enabled: document.getElementById("cfgSmc3Enabled").value,
+    smc4Enabled: document.getElementById("cfgSmc4Enabled").value,
   };
 }
 
@@ -3633,6 +3782,7 @@ function loadSettings(){
   if(saved.smc2ExecTf) document.getElementById("cfgSmc2ExecTf").value = saved.smc2ExecTf;
   if(saved.smc2SkipIdm) document.getElementById("cfgSmc2SkipIdm").value = saved.smc2SkipIdm;
   if(saved.smc3Enabled) document.getElementById("cfgSmc3Enabled").value = saved.smc3Enabled;
+  if(saved.smc4Enabled) document.getElementById("cfgSmc4Enabled").value = saved.smc4Enabled;
 
   if(Array.isArray(saved.coinList) && saved.coinList.length){
     COIN_LIST = saved.coinList.slice();
@@ -3649,7 +3799,7 @@ function loadSettings(){
 }
 
 // Auto-save tiap ada perubahan input konfigurasi
-["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode","cfgSndBiasStart","cfgSmcBiasStart","cfgSmc2ExecTf","cfgSmc2SkipIdm","cfgSmc3Enabled"].forEach(id=>{
+["cfgMarket","cfgTopN","cfgMinVol","cfgSndEntryMode","cfgSndBiasStart","cfgSmcBiasStart","cfgSmc2ExecTf","cfgSmc2SkipIdm","cfgSmc3Enabled","cfgSmc4Enabled"].forEach(id=>{
   document.getElementById(id).addEventListener("change", saveSettings);
 });
 document.getElementById("tabAll").addEventListener("click", saveSettings);
