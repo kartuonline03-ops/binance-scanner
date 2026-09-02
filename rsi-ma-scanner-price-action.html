@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 2/9/2026 06:44</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 2/9/2026 18:26</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -3310,10 +3310,15 @@ function renderSmc(){
   // "diprune"/dihapus di render berikutnya (yg kepicu SANGAT SERING krn live price ikut
   // fingerprint), bikin detail yg baru dibuka nutup sendiri hampir seketika saat lagi dibaca.
   // Fix: samain formatnya ke "smc|symbol" / "smc2|symbol" persis kayak detKey aslinya.
+  // FIX BUG #2: pas Alur 3 & 4 ditambahkan, validKeys di atas TIDAK ikut ditambah "smc3|X" /
+  // "smc4|X" -> detail Alur 3/4 kena masalah PERSIS SAMA spt bug #1 di atas (nutup sendiri
+  // hampir seketika stlh dibuka), krn tetap ke-prune tiap render meski baru aja dibuka.
   const validKeys = new Set();
   results.forEach(r=>{
     validKeys.add("smc|"+r.symbol);
     if(S.smc2Results[r.symbol]) validKeys.add("smc2|"+r.symbol);
+    if(CFG && CFG.smc3Enabled && S.smc3Results[r.symbol]) validKeys.add("smc3|"+r.symbol);
+    if(CFG && CFG.smc4Enabled && S.smc4Results[r.symbol]) validKeys.add("smc4|"+r.symbol);
   });
   // chartKey mini-chart TIDAK lagi ikut "kind" (kategori) — cuma per simbol — biar posisi
   // scroll/zoom-nya TETAP kebawa walau status simbol pindah kategori (mis. NO_SETUP -> TUNGGU),
