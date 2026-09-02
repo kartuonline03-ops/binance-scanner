@@ -492,6 +492,18 @@ const SMC_LIMIT = { d1:120, h4:150, h1:200, m5:200 };
 const SMC_TRIGGER_TF = "m5";       // TF yg jadi trigger WS realtime utama
 const SMC_ATR_SL_BUFFER_MULT = 0.25; // buffer SL di luar Order Block, dlm satuan ATR M5 (kecil, sesuai gaya "SL kecil")
 
+// Durasi 1 candle per TF (ms) — dipakai buat ngecek apakah candle TERAKHIR di array udah
+// closed atau masih berjalan/live (krn mergeCandleRow() nimpa candle terakhir trs-menerus
+// selama openTime-nya sama, jadi array candle SELALU bisa berakhir dgn candle yg blm closed).
+const TF_MS = { m1:60*1000, m5:5*60*1000, h1:60*60*1000, h4:4*60*60*1000, d1:24*60*60*1000 };
+function lastClosedIdx(candles, tf){
+  const n = candles.length;
+  if(n===0) return -1;
+  if(!tf || !TF_MS[tf]) return n-1; // tf gak dikenal -> gak bisa ngecek, anggap aja closed (perilaku lama)
+  const closeTime = candles[n-1].openTime + TF_MS[tf];
+  return (Date.now() < closeTime && n>=2) ? n-2 : n-1;
+}
+
 /* ============================================================
    MODE SND (SUPPLY & DEMAND) — timeframe TETAP, top-down juga:
    D1 (bias) -> H4 (arah menengah) -> H1 (identifikasi zona S/D:
@@ -952,7 +964,7 @@ function reduceZigzag(points){
 }
 
 // Analisis struktur: tren HH-HL (bullish) / LH-LL (bearish), + event BOS/CHoCH dari candle yg SUDAH CLOSE.
-function analyzeStructure(candles, swingStrength, lookback){
+function analyzeStructure(candles, swingStrength, lookback, tf){
   swingStrength = swingStrength || STRUCT_SWING_STRENGTH;
   lookback = lookback || STRUCT_LOOKBACK;
   const n = candles.length;
@@ -974,7 +986,12 @@ function analyzeStructure(candles, swingStrength, lookback){
   if(lastH.price>prevH.price && lastL.price>prevL.price) trend="BULLISH";       // Higher High + Higher Low
   else if(lastH.price<prevH.price && lastL.price<prevL.price) trend="BEARISH";  // Lower High + Lower Low
 
-  const last = candles[n-1];
+  // PENTING: event (BOS/CHoCH) dievaluasi dari candle yg SUDAH CLOSED, BUKAN candle[n-1] apa
+  // adanya. Array candle bisa aja berakhir dgn candle yg msh berjalan/live (tiap poll/tick,
+  // open/high/low/close-nya ikut berubah sblm 1 bar itu bener2 kelar) — kalau dipakai
+  // langsung, event BOS/CHoCH bisa "kedip" flip-flop antar-scan cuma krn harga live goyang
+  // naik-turun ngelewatin level swing, padahal bar-nya sendiri blm final.
+  const last = candles[lastClosedIdx(candles, tf)];
   const li = candleBodyInfo(last);
   const strongBody = li.bodyRatio >= PA_BODY_MIN_RATIO;
 
@@ -999,19 +1016,24 @@ const IND_MINOR_STRENGTH = 1;    // pivot kecil (1 candle kiri&kanan) utk cari l
 const IND_LOOKBACK       = 60;   // rentang candle utk cari level minor & candle sweep-nya (diperluas biar nangkep IND lebih jauh di histori)
 const IND_CONFIRM_WINDOW = 4;    // brp candle setelah sweep utk tunggu konfirmasi REAL/FAKE
 
-function detectInducement(candles){
+function detectInducement(candles, tf){
   const n = candles.length;
   if(n < IND_LOOKBACK+IND_MINOR_STRENGTH+3) return null;
 
   const minorPts = reduceZigzag(findSwingPoints(candles, IND_MINOR_STRENGTH, IND_LOOKBACK));
   if(minorPts.length<1) return null;
 
+  // Batas atas scan sweep & candle konfirmasi = candle yg SUDAH CLOSED (bukan n-1 apa adanya)
+  // — alasan sama spt di analyzeStructure/detectOrderBlock: candle yg msh live/berjalan bisa
+  // "sweep" lalu "gak jadi sweep" lagi antar-scan cuma krn high/low/close-nya msh goyang.
+  const lastIdx = lastClosedIdx(candles, tf);
+
   // Cari, dari level minor paling baru mundur ke belakang, sweep candle PALING BARU yg ditemukan
   let best = null;
   let latest = null; // sweep PALING BARU apapun verdict-nya (buat marker "penanda" candle berjalan)
   for(let k=minorPts.length-1; k>=0; k--){
     const level = minorPts[k];
-    for(let i=level.i+1; i<n; i++){
+    for(let i=level.i+1; i<=lastIdx; i++){
       const c = candles[i];
       let swept=false;
       if(level.type==="H" && c.high>level.price && c.close<level.price) swept=true;   // sweep buy-side liquidity
@@ -1019,7 +1041,7 @@ function detectInducement(candles){
       if(!swept) continue;
 
       const expectDir = level.type==="H" ? "SELL" : "BUY"; // arah yg "diharapkan" kalau ini inducement asli
-      const windowEnd = Math.min(n-1, i+IND_CONFIRM_WINDOW);
+      const windowEnd = Math.min(lastIdx, i+IND_CONFIRM_WINDOW);
       let verdict = "PENDING";
       for(let j=i+1; j<=windowEnd; j++){
         const cj=candles[j], lij=candleBodyInfo(cj);
@@ -1030,7 +1052,7 @@ function detectInducement(candles){
         if(expectDir==="SELL" && cj.close > candles[i].high){ verdict="FAKE"; break; }  // malah lanjut naik -> bukan trap
         if(expectDir==="BUY"  && cj.close < candles[i].low){ verdict="FAKE"; break; }   // malah lanjut turun -> bukan trap
       }
-      const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(n-1-i), openTime:c.openTime };
+      const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(lastIdx-i), openTime:c.openTime };
       // "latest" = sweep paling baru apa adanya (termasuk FAKE/PENDING di candle berjalan) —
       // ini TETAP dicatat & dikirim ke chart sbg penanda tambahan, bukan dihapus.
       if(!latest || cand.barsAgo < latest.barsAgo) latest = cand;
@@ -1123,7 +1145,7 @@ function detectLiquidityZones(candles){
    ============================================================ */
 const OB_SCAN_BACK = 15; // brp candle mundur dari candle breakout utk nyari candle Order Block
 
-function detectOrderBlock(candles){
+function detectOrderBlock(candles, tf){
   const n = candles.length;
   if(n < STRUCT_SWING_STRENGTH+OB_SCAN_BACK+3) return null;
 
@@ -1143,9 +1165,14 @@ function detectOrderBlock(candles){
   // berhenti nyari — supaya OB yg masih valid gak "kelempar" cuma gara2 ada breakout baru yg
   // lebih baru tapi hasilnya malah OB yg sudah mitigated (kurang relevan). Kalau smp habis
   // scan gak ada satupun yg fresh, baru pakai kandidat PALING BARU yg ketemu (fallback lama).
+  // PENTING: scan breakout mulai dari candle yg SUDAH CLOSED (bukan n-1 apa adanya) - candle
+  // yg msh live/berjalan close-nya trs goyang naik-turun ngelewatin lastH/lastL, bikin "ada
+  // breakout / kagak" ganti2 antar-scan -> OB yg ketemu ikut lompat2 ke candle yg beda2 tiap
+  // scan padahal harga blm bener2 kemana-mana (bar-nya sendiri blm final).
   const breakoutScanFrom = Math.max(1, n - STRUCT_LOOKBACK);
+  const scanFromIdx = lastClosedIdx(candles, tf);
   let firstCandidate = null;
-  for(let i=n-1; i>=breakoutScanFrom; i--){
+  for(let i=scanFromIdx; i>=breakoutScanFrom; i--){
     const c = candles[i];
     const bi = candleBodyInfo(c);
     if(bi.bodyRatio < PA_BODY_MIN_RATIO) continue;
@@ -1326,8 +1353,8 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   }
   // --- Struktur M5 (BOS/CHoCH) & Inducement M5 — dipakai utk visual mini chart eksekusi
   // (garis step BOS/CHoCH & marker IND, mirip gaya chart SMC pada umumnya)
-  const structM5early = analyzeStructure(candlesM5);
-  const indM5Raw = detectInducement(candlesM5);
+  const structM5early = analyzeStructure(candlesM5, null, null, "m5");
+  const indM5Raw = detectInducement(candlesM5, "m5");
 
   // --- Persistensi RIWAYAT IND (REAL) M5 LINTAS-SCAN ---
   // detectInducement() cuma nengok IND_LOOKBACK candle terakhir setiap kali dipanggil ulang,
@@ -1363,7 +1390,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   }
   // POI/Order Block M5 dihitung di sini juga (lebih awal), biar zona OB tetap kelihatan
   // di chart meski status masih WAIT/NO_SETUP -> gak perlu nunggu semua syarat lolos dulu.
-  const obEarly = detectOrderBlock(candlesM5);
+  const obEarly = detectOrderBlock(candlesM5, "m5");
 
   // ikut disertakan di SEMUA return sejak titik ini, biar mini chart & info liquidity tetap tampil
   // walau status masih WAIT/NO_SETUP di langkah manapun (D1/H4/H1/M5)
@@ -1386,7 +1413,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   if(d1Live1) Object.assign(liqExtra, { d1LiveHigh:d1Live1.high, d1LiveLow:d1Live1.low, d1LiveClose:d1Live1.close, d1LiveRunning:d1Live1.isRunning });
 
   // --- Langkah 1: bias D1 ---
-  const structD1 = analyzeStructure(candlesD1);
+  const structD1 = analyzeStructure(candlesD1, null, null, "d1");
   const biasD1 = structD1.trend || "RANGING";
   reasons.push(`D1: bias ${biasLabel(structD1.trend)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
   if(d1Live1 && d1Live1.isRunning){
@@ -1398,7 +1425,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   }
 
   // --- Langkah 2: arah H4, harus searah bias D1 ---
-  const structH4 = analyzeStructure(candlesH4);
+  const structH4 = analyzeStructure(candlesH4, null, null, "h4");
   const dirH4 = structH4.trend;
   reasons.push(`H4: arah ${biasLabel(dirH4)} (swing high ${fmt(structH4.swingHigh)} / swing low ${fmt(structH4.swingLow)})`);
   if(!dirH4 || dirH4 !== biasD1){
@@ -1432,7 +1459,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   // Sama spt IND M5: persisten lintas-scan biar REAL yg udah ketemu gak "lupa" cuma krn
   // jendela lookback candle H1 geser. Persisted cuma dipakai kalau expectDir-nya masih
   // relevan dgn mainDir SEKARANG (kalau bias kebalik, IDM lama otomatis tidak dipakai lagi).
-  const indH1Raw = detectInducement(candlesH1);
+  const indH1Raw = detectInducement(candlesH1, "h1");
   let indH1 = indH1Raw;
   if(tradeSymbol){
     const persistedH1 = S.smcIndPersistH1[tradeSymbol];
@@ -1458,7 +1485,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   reasons.push(`H1: IDM sudah diambil (sweep ${indH1.type==="H"?"buy-side":"sell-side"} liquidity, verdict ${indH1.verdict}) -> boleh mulai cari trigger entry di M5.`);
 
   // --- Langkah 5: M5 cari BOS searah H1 & H4 ---
-  const structM5 = analyzeStructure(candlesM5);
+  const structM5 = analyzeStructure(candlesM5, null, null, "m5");
   const bosOk = structM5.trend===dirH4 && structM5.event==="BOS";
   if(!bosOk){
     reasons.push(structM5.event==="CHOCH"
@@ -1517,7 +1544,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
     ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
-    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    structD1, structH4, structH1: analyzeStructure(candlesH1, null, null, "h1"), reasons,
   });
 }
 /* ============================================================
@@ -1540,6 +1567,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   biasStartTf = biasStartTf || "D1";
   opts = opts || {};
   const execTfLabel = opts.execTfLabel || "M5";      // label TF eksekusi entry di pesan/reasons ("M5" default, "M1" mode scalping)
+  const execTf = execTfLabel.toLowerCase();          // versi lowercase, dipakai buat lastClosedIdx() (butuh key TF_MS spt "m5"/"m1")
   const pullbackMin = opts.pullbackMin!=null ? opts.pullbackMin : 0.1; // ambang retrace H1 min -> scalping bisa dipangkas lebih kecil
   const skipIdm = !!opts.skipIdm;                    // true -> syarat sweep IDM H1 gak wajib, cuma info di reasons
   const preferNearTp = !!opts.preferNearTp;           // true -> TP prioritas swing TERDEKAT (H1) dulu, cocok scalping (RR kecil tp sering kena)
@@ -1566,8 +1594,8 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
       : `D1 Liquidity: area SSL (sell-side) di ${fmt(liqD1.ssl.bottom)}-${fmt(liqD1.ssl.top)} dari ${liqD1.ssl.count} equal low D1, BELUM disapu -> harga masih berpotensi "ditarik" ke area ini.`);
   }
 
-  const structM5early = analyzeStructure(candlesM5);
-  const indM5Raw = detectInducement(candlesM5);
+  const structM5early = analyzeStructure(candlesM5, null, null, execTf);
+  const indM5Raw = detectInducement(candlesM5, execTf);
 
   let indM5 = indM5Raw;
   if(persistKey){
@@ -1613,11 +1641,11 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   // --- Langkah 1 & 2: tentukan bias/arah, sesuai TF awal yg dipilih (biasStartTf) ---
   // structD1/structH4/dirH1dir dihitung SELALU (data numpang S.smcCandles yg sama, gak nambah
   // beban fetch) -> structD1/structH4 tetap kepake sbg info/fallback TP di langkah akhir nanti.
-  const structD1 = analyzeStructure(candlesD1);
+  const structD1 = analyzeStructure(candlesD1, null, null, "d1");
   const biasD1 = structD1.trend || "RANGING";
-  const structH4 = analyzeStructure(candlesH4);
+  const structH4 = analyzeStructure(candlesH4, null, null, "h4");
   const dirH4 = structH4.trend;
-  const structH1dir = analyzeStructure(candlesH1);
+  const structH1dir = analyzeStructure(candlesH1, null, null, "h1");
   const dirH1 = structH1dir.trend;
   let mainDir;
 
@@ -1683,7 +1711,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   // --- Langkah 4: cek IDM di H1 sudah diambil / belum (persistensi terpisah dari Alur 1) ---
   // Kalau skipIdm aktif (mode scalping), langkah ini dilewati sbg GATING -> langsung anggap
   // "taken", cuma tetap dihitung & dilaporkan di reasons sbg info (biar histori tetap kelihatan).
-  const indH1Raw = detectInducement(candlesH1);
+  const indH1Raw = detectInducement(candlesH1, "h1");
   let indH1 = indH1Raw;
   if(persistKey){
     const persistedH1 = S.smc2IndPersistH1[persistKey];
@@ -1715,7 +1743,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   // --- Langkah 5: TF eksekusi (M5 default / M1 mode scalping) cari BOS searah rencana (mainDir) ---
   // Pakai mainDir (bukan dirH4 langsung) supaya tetap benar di mode "H1" (dirH4 gak dipakai gating).
   const trendMain = mainDir==="BUY" ? "BULLISH" : "BEARISH";
-  const structM5 = analyzeStructure(candlesM5);
+  const structM5 = analyzeStructure(candlesM5, null, null, execTf);
   const bosOk = structM5.trend===trendMain && structM5.event==="BOS";
   if(!bosOk){
     reasons.push(structM5.event==="CHOCH"
@@ -1778,7 +1806,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, dirH1, hasPullback:true, idmTaken:true, bosM5:true,
     ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
-    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    structD1, structH4, structH1: analyzeStructure(candlesH1, null, null, "h1"), reasons,
   });
 }
 /* ============================================================
@@ -1807,8 +1835,8 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
     return empty;
   }
 
-  const structM5early = analyzeStructure(candlesM5);
-  const obEarlyRaw = detectOrderBlock(candlesM5);
+  const structM5early = analyzeStructure(candlesM5, null, null, "m5");
+  const obEarlyRaw = detectOrderBlock(candlesM5, "m5");
   const liqExtra = {
     structM5Trend: structM5early.trend, structM5Event: structM5early.event,
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
@@ -1819,9 +1847,9 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
   if(d1Live3) Object.assign(liqExtra, { d1LiveHigh:d1Live3.high, d1LiveLow:d1Live3.low, d1LiveClose:d1Live3.close, d1LiveRunning:d1Live3.isRunning });
 
   // --- Langkah 1: tren INDUK harus established dulu (D1 bias + H4 align, sama spt Alur 1) ---
-  const structD1 = analyzeStructure(candlesD1);
+  const structD1 = analyzeStructure(candlesD1, null, null, "d1");
   const biasD1 = structD1.trend || "RANGING";
-  const structH4 = analyzeStructure(candlesH4);
+  const structH4 = analyzeStructure(candlesH4, null, null, "h4");
   const dirH4 = structH4.trend;
   reasons.push(`D1: bias ${biasLabel(structD1.trend)} | H4: arah ${biasLabel(dirH4)} -> ini tren INDUK yg mau dicari pembalikannya.`);
   if(d1Live3 && d1Live3.isRunning){
@@ -1840,7 +1868,7 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
   // --- Langkah 2: CHoCH di exec TF (M5) LAWAN tren induk -> kandidat pembalikan, DIPERSIST ---
   // (event CHOCH cuma muncul di candle SAAT itu terjadi; kalau gak dipersist, kandidatnya
   // "hilang" begitu candle berikutnya closed meski konfirmasi lanjutan blm sempat kecek)
-  const structM5 = analyzeStructure(candlesM5);
+  const structM5 = analyzeStructure(candlesM5, null, null, "m5");
   if(tradeSymbol){
     let pending = S.smc3Pending[tradeSymbol];
     // batal kalau tren induk (oldDir) malah BOS lagi -> reversal gagal, tren lama lanjut
@@ -1869,7 +1897,7 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
   if(obEarlyRaw && obEarlyRaw.direction===newDir) liqExtra.ob = obEarlyRaw;
 
   // --- Langkah 3: IDM searah arah BARU (newDir) di H1, persist terpisah dari Alur 1/2 ---
-  const indH1Raw = detectInducement(candlesH1);
+  const indH1Raw = detectInducement(candlesH1, "h1");
   let indH1 = indH1Raw;
   if(tradeSymbol){
     const persistedH1 = S.smc3IndPersistH1[tradeSymbol];
@@ -1933,7 +1961,7 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
     status: newDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: newDir, biasD1, dirH4, idmTaken:true, bosM5:true,
     ob: obM5, entry, stopLoss, takeProfit, tpLevel, rr, atrM5,
-    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    structD1, structH4, structH1: analyzeStructure(candlesH1, null, null, "h1"), reasons,
   });
 }
 /* ============================================================
@@ -1963,8 +1991,8 @@ function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
     return empty;
   }
 
-  const structM5 = analyzeStructure(candlesM5);
-  const obEarly = detectOrderBlock(candlesM5);
+  const structM5 = analyzeStructure(candlesM5, null, null, "m5");
+  const obEarly = detectOrderBlock(candlesM5, "m5");
   const liqExtra = {
     structM5Trend: structM5.trend, structM5Event: structM5.event,
     structM5High: structM5.swingHigh, structM5Low: structM5.swingLow,
@@ -1981,7 +2009,7 @@ function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
   const mainDir = structM5.trend==="BULLISH" ? "BUY" : "SELL";
 
   // --- Langkah 2: IDM dicari LANGSUNG di M5 (bukan H1), persist terpisah dari alur lain ---
-  const indM5Raw = detectInducement(candlesM5);
+  const indM5Raw = detectInducement(candlesM5, "m5");
   let indM5 = indM5Raw;
   if(tradeSymbol){
     const persisted = S.smc4IndPersist[tradeSymbol];
@@ -2206,7 +2234,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
 
   // --- Langkah 1 & 2: tentukan bias/arah, sesuai TF awal yg dipilih ---
   if(biasStartTf==="D1"){
-    structD1 = analyzeStructure(candlesD1);
+    structD1 = analyzeStructure(candlesD1, null, null, "d1");
     biasD1 = structD1.trend;
     if(biasD1!=="BULLISH" && biasD1!=="BEARISH"){
       reasons.push("D1: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
@@ -2214,7 +2242,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
     }
     reasons.push(`D1: bias ${biasLabelSnd(biasD1)} (swing high ${fmt(structD1.swingHigh)} / swing low ${fmt(structD1.swingLow)})`);
 
-    structH4 = analyzeStructure(candlesH4);
+    structH4 = analyzeStructure(candlesH4, null, null, "h4");
     dirH4 = structH4.trend;
     if(dirH4!==biasD1){
       reasons.push(`H4: arah struktur (${dirH4?biasLabelSnd(dirH4):"gak jelas"}) belum searah dgn bias D1 (${biasLabelSnd(biasD1)}) -> tunggu.`);
@@ -2224,7 +2252,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
     mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
   }else if(biasStartTf==="H4"){
     reasons.push("Pengaturan: bias dimulai dari H4 (D1 dilewati).");
-    structH4 = analyzeStructure(candlesH4);
+    structH4 = analyzeStructure(candlesH4, null, null, "h4");
     dirH4 = structH4.trend;
     if(dirH4!=="BULLISH" && dirH4!=="BEARISH"){
       reasons.push("H4: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
@@ -2234,7 +2262,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
     mainDir = dirH4==="BULLISH" ? "BUY" : "SELL";
   }else{ // "H1"
     reasons.push("Pengaturan: bias dimulai dari H1 saja (D1 & H4 dilewati -> mode paling longgar/cepat).");
-    const structH1dir = analyzeStructure(candlesH1);
+    const structH1dir = analyzeStructure(candlesH1, null, null, "h1");
     dirH1 = structH1dir.trend;
     if(dirH1!=="BULLISH" && dirH1!=="BEARISH"){
       reasons.push("H1: struktur masih ranging/gak jelas -> belum ada bias arah yg valid.");
@@ -2310,7 +2338,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, dirH1, zoneReached:true, entryTf,
     entry, stopLoss, takeProfit, rr, atrM5: atr,
-    structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    structD1, structH4, structH1: analyzeStructure(candlesH1, null, null, "h1"), reasons,
   });
 }
 
