@@ -2008,6 +2008,15 @@ function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
   }
   const mainDir = structM5.trend==="BULLISH" ? "BUY" : "SELL";
 
+  // FIX: sama kayak Alur 1/2 - obEarly dihitung dari trend M5 SENDIRI (detectOrderBlock gak
+  // nerima parameter arah), jadi bisa aja masih berlawanan sama mainDir yg baru dipastikan dari
+  // structM5.trend di atas. Kalau beda arah, jangan ditampilkan sbg ilustrasi zona OB -> tanpa
+  // ini, badge bisa kelihatan BUY tapi label POI di mini chart nulis "OB SELL", keliatan
+  // plin-plan padahal arah utamanya sendiri gak berubah.
+  if(liqExtra.ob && liqExtra.ob.direction !== mainDir){
+    liqExtra.ob = null;
+  }
+
   // --- Langkah 2: IDM dicari LANGSUNG di M5 (bukan H1), persist terpisah dari alur lain ---
   const indM5Raw = detectInducement(candlesM5, "m5");
   let indM5 = indM5Raw;
