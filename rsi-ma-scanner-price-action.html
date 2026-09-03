@@ -2959,18 +2959,31 @@ function renderSmcMiniChart(r, chartKey, execLabel, obLabel){
   }
   // RIWAYAT BOS/CHoCH SEPANJANG jendela candle (bukan cuma status TERAKHIR spt 2 garis di atas) —
   // tiap titik breakout ditandai TEPAT di candle tempat kejadiannya, biar kelihatan pola historisnya,
-  // bukan cuma "kondisi sekarang". Titik biru = BOS (lanjut searah tren), titik kuning = CHoCH
-  // (potensi pembalikan). Label kecil B/C ditaruh di atas candle kalau tren naik, di bawah kalau turun
-  // (biar gak numpuk sama body candle-nya).
+  // bukan cuma "kondisi sekarang". SEGITIGA (bukan bulat) biar beda bentuk dgn titik IDM (lingkaran)
+  // -> gampang dibedain sekilas + arah lancipnya sendiri udah nunjukin arah tren (lancip ke atas =
+  // tren naik, ke bawah = tren turun). Biru = BOS (lanjut searah tren), kuning = CHoCH (pembalikan).
+  // Label kecil B/C ditaruh di seberang arah lancipnya (biar gak numpuk sama badan segitiga).
   for(const ev of structEventsShown){
     if(ev.barsAgo===null || ev.barsAgo===undefined || ev.barsAgo>=n) continue;
     const yye = y(ev.price);
     const idxE = (n-1) - ev.barsAgo;
     const cxe = idxE*cw + cw/2;
     const colE = ev.type==="BOS" ? "#58a6ff" : "#f0b90b";
-    svgParts.push(`<circle cx="${cxe}" cy="${yye}" r="2.5" fill="${colE}" opacity="0.9"/>`);
-    svgParts.push(`<text x="${cxe}" y="${ev.trend==="BULLISH"?yye+11:yye-5}" text-anchor="middle" fill="${colE}" font-family="ui-monospace,monospace" font-size="7" opacity="0.9">${ev.type==="BOS"?"B":"C"}</text>`);
+    const up = ev.trend==="BULLISH"; // segitiga lancip ke atas kalau tren naik, ke bawah kalau turun
+    const s = 3.2; // "jari-jari" segitiga
+    const tri = up
+      ? `${cxe},${yye-s} ${cxe-s},${yye+s} ${cxe+s},${yye+s}`   // lancip ke ATAS
+      : `${cxe},${yye+s} ${cxe-s},${yye-s} ${cxe+s},${yye-s}`;  // lancip ke BAWAH
+    svgParts.push(`<polygon points="${tri}" fill="${colE}" opacity="0.9"/>`);
+    svgParts.push(`<text x="${cxe}" y="${up?yye+12:yye-6}" text-anchor="middle" fill="${colE}" font-family="ui-monospace,monospace" font-size="7" opacity="0.9">${ev.type==="BOS"?"B":"C"}</text>`);
   }
+  // Kumpulan index candle yg udah kepakai marker BOS/CHoCH di atas — dipakai buat geser titik
+  // riwayat IDM di bawah kalau kebetulan jatuh di candle yg SAMA, biar dua-duanya tetap
+  // kelihatan (gak numpuk saling nutupin, spt yg kejadian sblm fix ini).
+  const eventIdxSet = new Set(
+    structEventsShown.filter(ev=>ev.barsAgo!==null && ev.barsAgo!==undefined && ev.barsAgo<n)
+      .map(ev=>(n-1)-ev.barsAgo)
+  );
   // marker inducement (IND) - titik sweep likuiditas minor, ungu titik-titik
   if(showInd){
     const yy=y(r.indM5Level);
@@ -2995,15 +3008,18 @@ function renderSmcMiniChart(r, chartKey, execLabel, obLabel){
       svgParts.push(`<text x="${cx2}" y="${yy2-6}" text-anchor="middle" fill="${col2}" font-family="ui-monospace,monospace" font-size="7.5" opacity="0.85">(${r.indM5LatestVerdict||"?"})</text>`);
     }
   }
-  // RIWAYAT IND (REAL) sebelumnya — TIDAK dihapus, tetap digambar semua sbg titik kecil ungu
-  // redup di posisi candle & harga asalnya masing2 (yg paling baru sudah digambar full di atas
-  // dgn garis+label utama, jadi di sini cuma sisa riwayat yg lebih lama).
+  // RIWAYAT IND (REAL) sebelumnya — TIDAK dihapus, tetap digambar semua sbg titik ungu di posisi
+  // candle & harga asalnya masing2 (yg paling baru sudah digambar full di atas dgn garis+label
+  // utama, jadi di sini cuma sisa riwayat yg lebih lama). Dibikin lebih tebal/kontras (drpd
+  // sebelumnya) + digeser dikit kalau kebetulan jatuh di candle yg sama dgn marker BOS/CHoCH,
+  // supaya gak ketutupan/susah kebedain kayak sebelumnya.
   for(const h of indHistoryShown){
     if(h.barsAgo===null || h.barsAgo===undefined || h.barsAgo>=n) continue;
-    const yyh = y(h.level);
     const sweepIdxH = (n-1) - h.barsAgo;
+    const overlapsEvent = eventIdxSet.has(sweepIdxH);
+    const yyh = y(h.level) + (overlapsEvent ? -9 : 0); // geser ke atas dikit biar gak numpuk pas bentrok
     const cxh = sweepIdxH*cw + cw/2;
-    svgParts.push(`<circle cx="${cxh}" cy="${yyh}" r="3" fill="none" stroke="#a371f7" stroke-width="1" opacity="0.45"/>`);
+    svgParts.push(`<circle cx="${cxh}" cy="${yyh}" r="3.5" fill="none" stroke="#a371f7" stroke-width="1.4" opacity="0.75"/>`);
   }
 
   // area BSL (buy-side liquidity, kolam equal high)
