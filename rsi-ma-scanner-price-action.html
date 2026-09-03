@@ -1059,7 +1059,14 @@ function scanStructureEvents(candles, tf, swingStrength, lookback){
     }
     if(!ev){ prevKey=null; continue; }
 
-    const key = trend+"|"+ev+"|"+lastH.i+"|"+lastL.i;
+    // FIX BUG: key SEBELUMNYA menyertakan lastH.i & lastL.i (index pasangan swing yg lagi
+    // aktif). Masalahnya, di tren yg kuat, swing high/low BARU bisa kekonfirmasi tiap beberapa
+    // candle sekali -> lastH.i/lastL.i ikut berubah tiap kali itu terjadi, sehingga key dianggap
+    // "beda" & marker BARU ikut muncul di HAMPIR SETIAP CANDLE sepanjang breakout yg SAMA (bukan
+    // breakout baru beneran) — itu penyebab keliatan "tiap candle jadi BOS/CHoCH". Fix: key cukup
+    // trend+event aja, TANPA index swing -> candle2 berurutan dgn status SAMA cuma dicatat SEKALI
+    // (di candle PERTAMA saat status itu mulai), baru dicatat lagi kalau statusnya BENERAN ganti.
+    const key = trend+"|"+ev;
     if(key!==prevKey){
       events.push({ barsAgo:(n-1-i), type:ev, trend, price:c.close });
     }
