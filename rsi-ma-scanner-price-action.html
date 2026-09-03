@@ -3334,12 +3334,37 @@ function renderSnd(){
   fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSndCard, fpSnd);
 }
 
+// FIX BUG: kategorisasi tab (BUY/SELL/TUNGGU/NO SETUP) sebelumnya CUMA lihat r.status —
+// yaitu status ALUR 1 doang — padahal 1 kartu simbol nampilin Alur 1-4 sekaligus (numpang
+// candle yg sama). Akibatnya kalau Alur 1 kebetulan NO_SETUP (mis. D1 & H4 gak align) tapi
+// Alur 2/3/4 utk simbol yg SAMA udah TUNGGU atau bahkan ENTRY, kartunya tetap nyasar ke tab
+// "Analisa (No Setup)" — org yg lg liat tab TUNGGU/BUY/SELL gak akan pernah lihat progress
+// alur lain itu kecuali gak sengaja buka tab Analisa. Fix: status "efektif" simbol dihitung
+// dari status PALING MAJU di antara semua alur yg aktif utk simbol itu (prioritas ENTRY >
+// TUNGGU > NO_SETUP), Alur 1 dicek duluan (biar perilaku lama gak berubah kalau Alur 1 udah
+// TUNGGU/ENTRY sendiri), baru nengok Alur 2 -> 3 -> 4 kalau Alur 1-nya NO_SETUP.
+function smcEffectiveStatus(symbol, r1){
+  if(r1.status!=="NO_SETUP") return r1.status;
+  const r2 = S.smc2Results[symbol];
+  if(r2 && r2.status!=="NO_SETUP") return r2.status;
+  if(CFG && CFG.smc3Enabled){
+    const r3 = S.smc3Results[symbol];
+    if(r3 && r3.status!=="NO_SETUP") return r3.status;
+  }
+  if(CFG && CFG.smc4Enabled){
+    const r4 = S.smc4Results[symbol];
+    if(r4 && r4.status!=="NO_SETUP") return r4.status;
+  }
+  return "NO_SETUP";
+}
 function renderSmc(){
   const results = Object.values(S.smcResults);
-  const buys = results.filter(r=>r.status==="ENTRY_BUY").sort((a,b)=>(b.rr||0)-(a.rr||0));
-  const sells = results.filter(r=>r.status==="ENTRY_SELL").sort((a,b)=>(b.rr||0)-(a.rr||0));
-  const waiting = results.filter(r=>r.status==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
-  const noSetup = results.filter(r=>r.status==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  const effStatus = {};
+  results.forEach(r=>{ effStatus[r.symbol] = smcEffectiveStatus(r.symbol, r); });
+  const buys = results.filter(r=>effStatus[r.symbol]==="ENTRY_BUY").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const sells = results.filter(r=>effStatus[r.symbol]==="ENTRY_SELL").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const waiting = results.filter(r=>effStatus[r.symbol]==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  const noSetup = results.filter(r=>effStatus[r.symbol]==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
 
   // FIX BUG: sebelumnya validKeys pakai format "kind|symbol" (buy|X, sell|X, ongoing|X,
   // analisa|X), padahal detKey detail Alur 1/Alur 2 di buildSmcCard pakai format chartKey
