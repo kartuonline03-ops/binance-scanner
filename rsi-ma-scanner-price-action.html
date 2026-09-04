@@ -1540,6 +1540,13 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     reasons.push("M5: BOS sudah ada tapi candle Order Block belum ketemu/tidak searah -> tunggu konfirmasi lanjutan.");
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir });
   }
+  // BUG FIX: detectOrderBlock() bisa balikin OB yg SUDAH mitigated sbg fallback (kalau sepanjang
+  // jendela scan gak ada satupun yg fresh) — bukan null. Tanpa cek eksplisit ini, OB yg udah
+  // pernah diretest (invalid) bisa kelolos jadi ENTRY, padahal harusnya tetap WAIT.
+  if(obM5.mitigated){
+    reasons.push(`M5: Order Block (${mainDir}) ketemu tapi SUDAH pernah diretest (mitigated) -> bukan OB fresh, tunggu OB baru yg belum tersentuh.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true, direction:mainDir, ob:obM5 });
+  }
 
   // --- Langkah 7 (OPSIONAL, toggle di config): OB M5 di atas cuma dianggap valid kalau ada
   // FVG (Fair Value Gap) dari H1 yg OVERLAP di zona yg sama & searah mainDir. FVG H1 dipilih
@@ -1563,15 +1570,19 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   for(let i=atrArrM5.length-1;i>=0;i--){ if(atrArrM5[i]!==null){ atrM5=atrArrM5[i]; break; } }
   const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
   const entry = obM5.optimalEntry;
+  const livePriceM5Now = candlesM5[candlesM5.length-1].close;
   let stopLoss, takeProfit, tpLevel;
-  // prioritas TP ke swing H4 kalau posisinya jelas lebih jauh (RR lebih gede), fallback ke swing H1
+  // BUG FIX: cek lama bandingin swingHigh H4 ke `entry` (level OB, jauh di belakang) — kalau
+  // harga udah lama ngelewatin level H4 itu (wajar di tren kuat), guard ini tetap lolos & TP
+  // jadi level yg SUDAH BASI (di belakang harga live), bukan target ke depan. Sekarang wajib
+  // dicek jg terhadap harga LIVE M5, bukan cuma terhadap entry.
   if(mainDir==="BUY"){
     stopLoss = obM5.zoneBottom - buffer;
-    if(structH4.swingHigh!==null && structH4.swingHigh>entry){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
+    if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
     else { takeProfit = paH1.swingHigh; tpLevel="H1"; }
   }else{
     stopLoss = obM5.zoneTop + buffer;
-    if(structH4.swingLow!==null && structH4.swingLow<entry){ takeProfit=structH4.swingLow; tpLevel="H4"; }
+    if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
     else { takeProfit = paH1.swingLow; tpLevel="H1"; }
   }
   const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
@@ -1583,7 +1594,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   // harga sekarang sudah balik ke level Entry atau belum. Baris ini cuma laporan
   // tertulis di detail alasan (bukan badge/indikator baru) biar kelihatan seberapa jauh
   // harga live sudah "lari" dari level Entry -> user yg mutusin market entry atau nunggu retest.
-  const livePriceM5 = candlesM5[candlesM5.length-1].close;
+  const livePriceM5 = livePriceM5Now; // numpang variabel yg sudah dihitung di atas (buat cek TP), gak perlu hitung ulang
   const gapAbs = livePriceM5 - entry;
   const gapPct = (gapAbs/entry)*100;
   const sudahLewatEntry = mainDir==="BUY" ? gapAbs>0 : gapAbs<0;
@@ -2092,6 +2103,13 @@ function analyzeSmcSetupFast(candlesH1, candlesM5, tradeSymbol){
     reasons.push("M5: BOS sudah ada tapi candle Order Block belum ketemu/tidak searah -> tunggu konfirmasi lanjutan.");
     return Object.assign({}, empty, liqExtra, { status:"WAIT", idmTaken:true, bosM5:true, direction:mainDir });
   }
+  // BUG FIX: detectOrderBlock() bisa balikin OB yg SUDAH mitigated sbg fallback (kalau sepanjang
+  // jendela scan gak ada satupun yg fresh) — bukan null. Tanpa cek eksplisit ini, OB yg udah
+  // pernah diretest (invalid) bisa kelolos jadi ENTRY, padahal harusnya tetap WAIT.
+  if(obM5.mitigated){
+    reasons.push(`M5: Order Block (${mainDir}) ketemu tapi SUDAH pernah diretest (mitigated) -> bukan OB fresh, tunggu OB baru yg belum tersentuh.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", idmTaken:true, bosM5:true, direction:mainDir, ob:obM5 });
+  }
 
   // --- Langkah 4 (WAJIB, beda dgn Alur 1 yg opsional): FVG H1 harus overlap & searah ---
   // Ini SATU-SATUNYA titik singgung Alur 4 ke TF di luar M5 -> pengganti konteks D1/H4/H1
@@ -2110,13 +2128,22 @@ function analyzeSmcSetupFast(candlesH1, candlesM5, tradeSymbol){
   for(let i=atrArrM5.length-1;i>=0;i--){ if(atrArrM5[i]!==null){ atrM5=atrArrM5[i]; break; } }
   const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
   const entry = obM5.optimalEntry;
+  const livePriceM5Now = candlesM5[candlesM5.length-1].close;
   let stopLoss, takeProfit;
+  // BUG FIX: structM5.swingHigh/swingLow itu level SEBELUM BOS (yg baru aja DITEMBUS candle
+  // BOS) -> begitu event="BOS" udah kekonfirmasi, level itu otomatis ada DI BELAKANG harga live
+  // skrg, bukan target ke depan lagi. Cek lama cuma bandingin ke `entry` (candle OB, jauh lbh
+  // rendah dari swingHigh krn OB terbentuk SBLM breakout) yg hampir SELALU lolos meski
+  // swingHigh itu sendiri sudah kelewatan jauh oleh harga live -> TP bisa keluar di BELAKANG
+  // harga sekarang (target yg sudah "basi"). Sekarang WAJIB dicek jg terhadap harga LIVE.
   if(mainDir==="BUY"){
     stopLoss = obM5.zoneBottom - buffer;
-    takeProfit = (structM5.swingHigh!==null && structM5.swingHigh>entry) ? structM5.swingHigh : entry + (entry-stopLoss)*1.5;
+    takeProfit = (structM5.swingHigh!==null && structM5.swingHigh>livePriceM5Now)
+      ? structM5.swingHigh : entry + (entry-stopLoss)*1.5;
   }else{
     stopLoss = obM5.zoneTop + buffer;
-    takeProfit = (structM5.swingLow!==null && structM5.swingLow<entry) ? structM5.swingLow : entry - (stopLoss-entry)*1.5;
+    takeProfit = (structM5.swingLow!==null && structM5.swingLow<livePriceM5Now)
+      ? structM5.swingLow : entry - (stopLoss-entry)*1.5;
   }
   const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   reasons.push(`Order Block M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
@@ -3385,12 +3412,31 @@ function renderSnd(){
   fillList("listAnalisa", noSetup, "analisa", "(tidak ada coin tanpa setup saat ini)", buildSndCard, fpSnd);
 }
 
+// FIX BUG: klasifikasi Buy/Sell/Tunggu/NoSetup di bawah ini sebelumnya CUMA lihat r.status
+// (status Alur 1 doang). Alur 2/3/4 render sbg chart TAMBAHAN di kartu yg sama, tapi statusnya
+// SAMA SEKALI GAK IKUT dihitung di sini -> kalau Alur 1 bilang NO_SETUP tapi Alur 3/4 justru
+// udah nemu ENTRY_BUY/SELL beneran (atau minimal TUNGGU), kartu itu ke-buang ke bucket "ANALISA
+// (BELUM ADA SETUP)" & count teratas (SINYAL BUY/SELL/MENUNGGU) TETAP 0 — sinyal Alur 3/4 jadi
+// "gak kedeteksi" di ringkasan, padahal kalau card-nya dibuka manual kelihatan jelas ada TUNGGU/ENTRY.
+// Fix: gabungkan status semua alur yg AKTIF (Alur 2 selalu; Alur 3/4 kalau di-enable), prioritas
+// ENTRY_BUY > ENTRY_SELL > WAIT > NO_SETUP -> baru itu yg dipakai buat nentuin bucket kartu ini.
+function smcCombinedBucket(symbol, r1){
+  const statuses = [r1.status];
+  const r2 = S.smc2Results[symbol]; if(r2) statuses.push(r2.status);
+  if(CFG && CFG.smc3Enabled){ const r3 = S.smc3Results[symbol]; if(r3) statuses.push(r3.status); }
+  if(CFG && CFG.smc4Enabled){ const r4 = S.smc4Results[symbol]; if(r4) statuses.push(r4.status); }
+  if(statuses.includes("ENTRY_BUY")) return "ENTRY_BUY";
+  if(statuses.includes("ENTRY_SELL")) return "ENTRY_SELL";
+  if(statuses.includes("WAIT")) return "WAIT";
+  return "NO_SETUP";
+}
+
 function renderSmc(){
   const results = Object.values(S.smcResults);
-  const buys = results.filter(r=>r.status==="ENTRY_BUY").sort((a,b)=>(b.rr||0)-(a.rr||0));
-  const sells = results.filter(r=>r.status==="ENTRY_SELL").sort((a,b)=>(b.rr||0)-(a.rr||0));
-  const waiting = results.filter(r=>r.status==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
-  const noSetup = results.filter(r=>r.status==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  const buys = results.filter(r=>smcCombinedBucket(r.symbol,r)==="ENTRY_BUY").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const sells = results.filter(r=>smcCombinedBucket(r.symbol,r)==="ENTRY_SELL").sort((a,b)=>(b.rr||0)-(a.rr||0));
+  const waiting = results.filter(r=>smcCombinedBucket(r.symbol,r)==="WAIT").sort((a,b)=>a.symbol.localeCompare(b.symbol));
+  const noSetup = results.filter(r=>smcCombinedBucket(r.symbol,r)==="NO_SETUP").sort((a,b)=>a.symbol.localeCompare(b.symbol));
 
   // FIX BUG: sebelumnya validKeys pakai format "kind|symbol" (buy|X, sell|X, ongoing|X,
   // analisa|X), padahal detKey detail Alur 1/Alur 2 di buildSmcCard pakai format chartKey
@@ -3402,6 +3448,8 @@ function renderSmc(){
   results.forEach(r=>{
     validKeys.add("smc|"+r.symbol);
     if(S.smc2Results[r.symbol]) validKeys.add("smc2|"+r.symbol);
+    if(CFG && CFG.smc3Enabled && S.smc3Results[r.symbol]) validKeys.add("smc3|"+r.symbol);
+    if(CFG && CFG.smc4Enabled && S.smc4Results[r.symbol]) validKeys.add("smc4|"+r.symbol);
   });
   // chartKey mini-chart TIDAK lagi ikut "kind" (kategori) — cuma per simbol — biar posisi
   // scroll/zoom-nya TETAP kebawa walau status simbol pindah kategori (mis. NO_SETUP -> TUNGGU),
