@@ -503,6 +503,17 @@ function lastClosedIdx(candles, tf){
   const closeTime = candles[n-1].openTime + TF_MS[tf];
   return (Date.now() < closeTime && n>=2) ? n-2 : n-1;
 }
+// Cari posisi (barsAgo dari candle TERAKHIR di array) suatu candle berdasarkan openTime-nya.
+// null kalau candle-nya udah gak ada lagi dlm array (mis. kegeser keluar krn window candle
+// store terbatas). Dipakai buat nyari posisi titik ASAL (origin) marker IDM/BOS/CHoCH yg
+// dipersist lintas-scan, biar bisa gambar garis siku dari asal ke titik sapuan/breakout-nya.
+function findBarsAgoByOpenTime(candles, openTime){
+  if(openTime===undefined || openTime===null) return null;
+  for(let i=candles.length-1; i>=0; i--){
+    if(candles[i].openTime===openTime) return (candles.length-1-i);
+  }
+  return null;
+}
 
 /* ============================================================
    MODE SND (SUPPLY & DEMAND) — timeframe TETAP, top-down juga:
@@ -1049,13 +1060,16 @@ function scanStructureEvents(candles, tf, swingStrength, lookback){
     const c = candles[i];
     const bi = candleBodyInfo(c);
     const strongBody = bi.bodyRatio >= PA_BODY_MIN_RATIO;
-    let ev=null;
+    // originPoint = swing yg lagi DITEMBUS (asal garis siku) -> beda tergantung jenis event:
+    // BOS di tren naik / CHoCH di tren turun nembus swing HIGH; BOS di tren turun / CHoCH di
+    // tren naik nembus swing LOW.
+    let ev=null, originPoint=null;
     if(trend==="BULLISH"){
-      if(c.close>lastH.price && strongBody) ev="BOS";
-      else if(c.close<lastL.price && strongBody) ev="CHOCH";
+      if(c.close>lastH.price && strongBody){ ev="BOS"; originPoint=lastH; }
+      else if(c.close<lastL.price && strongBody){ ev="CHOCH"; originPoint=lastL; }
     }else{
-      if(c.close<lastL.price && strongBody) ev="BOS";
-      else if(c.close>lastH.price && strongBody) ev="CHOCH";
+      if(c.close<lastL.price && strongBody){ ev="BOS"; originPoint=lastL; }
+      else if(c.close>lastH.price && strongBody){ ev="CHOCH"; originPoint=lastH; }
     }
     if(!ev){ prevKey=null; continue; }
 
@@ -1068,7 +1082,8 @@ function scanStructureEvents(candles, tf, swingStrength, lookback){
     // (di candle PERTAMA saat status itu mulai), baru dicatat lagi kalau statusnya BENERAN ganti.
     const key = trend+"|"+ev;
     if(key!==prevKey){
-      events.push({ barsAgo:(n-1-i), type:ev, trend, price:c.close });
+      events.push({ barsAgo:(n-1-i), type:ev, trend, price:c.close,
+                     originBarsAgo:(n-1-originPoint.i), originPrice:originPoint.price });
     }
     prevKey = key;
   }
@@ -1153,7 +1168,8 @@ function detectInducement(candles, tf){
         if(expectDir==="SELL" && cj.close > candles[i].high){ verdict="FAKE"; break; }  // malah lanjut naik -> bukan trap
         if(expectDir==="BUY"  && cj.close < candles[i].low){ verdict="FAKE"; break; }   // malah lanjut turun -> bukan trap
       }
-      const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(lastIdx-i), openTime:c.openTime };
+      const cand = { level:level.price, type:level.type, expectDir, verdict, barsAgo:(lastIdx-i), openTime:c.openTime,
+                     originOpenTime: candles[level.i].openTime }; // titik ASAL (swing minor yg disapu) -> dipakai gambar garis siku dari asal ke titik sapuan
       // "latest" = sweep paling baru apa adanya (termasuk FAKE/PENDING di candle berjalan) —
       // ini TETAP dicatat & dikirim ke chart sbg penanda tambahan, bukan dihapus.
       if(!latest || cand.barsAgo < latest.barsAgo) latest = cand;
@@ -1468,23 +1484,21 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     if(!S.smcIndPersist[tradeSymbol]) S.smcIndPersist[tradeSymbol] = [];
     const hist = S.smcIndPersist[tradeSymbol];
     if(indM5Raw && indM5Raw.verdict==="REAL" && !hist.some(h=>h.openTime===indM5Raw.openTime)){
-      hist.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime });
+      hist.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime, originOpenTime:indM5Raw.originOpenTime });
       if(hist.length>15) hist.shift(); // batasi biar gak numpuk tanpa batas, tetap simpan 15 riwayat terakhir
     }
     if(hist.length){
       // cari posisi tiap entri riwayat di array M5 SEKARANG (kalau candle aslinya masih kebawa dlm data)
-      const histPos = hist.map(h=>{
-        let barsAgo = null;
-        for(let i=candlesM5.length-1; i>=0; i--){
-          if(candlesM5[i].openTime===h.openTime){ barsAgo=(candlesM5.length-1-i); break; }
-        }
-        return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
-      });
+      const histPos = hist.map(h=>({
+        level:h.level, type:h.type, expectDir:h.expectDir,
+        barsAgo: findBarsAgoByOpenTime(candlesM5, h.openTime),
+        originBarsAgo: findBarsAgoByOpenTime(candlesM5, h.originOpenTime), // posisi titik ASAL -> buat garis siku
+      }));
       const latestH = histPos[histPos.length-1];
       // indM5Raw (kalau bukan REAL, mis. FAKE/PENDING di candle berjalan) jadi penanda tambahan "latest";
       // REAL PALING BARU jadi marker utama; sisa riwayat (histPos selain yg terakhir) tetap digambar semua.
       indM5 = { level:latestH.level, type:latestH.type, expectDir:latestH.expectDir, verdict:"REAL",
-                barsAgo: latestH.barsAgo,
+                barsAgo: latestH.barsAgo, originBarsAgo: latestH.originBarsAgo,
                 latest: (indM5Raw && indM5Raw.verdict!=="REAL") ? { level:indM5Raw.level, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null,
                 history: histPos.slice(0, -1) };
     }
@@ -1501,6 +1515,7 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
     indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
+    indM5OriginBarsAgo: indM5 ? indM5.originBarsAgo : null,
     // penanda tambahan: sweep PALING BARU apapun hasilnya (mis. FAKE di candle berjalan),
     // ditampilkan berdampingan TANPA menggantikan status utama indM5Verdict di atas (REAL tetap dipertahankan)
     indM5LatestLevel: indM5 && indM5.latest ? indM5.latest.level : null,
@@ -1723,20 +1738,18 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     if(!S.smc2IndPersist[persistKey]) S.smc2IndPersist[persistKey] = [];
     const hist = S.smc2IndPersist[persistKey];
     if(indM5Raw && indM5Raw.verdict==="REAL" && !hist.some(h=>h.openTime===indM5Raw.openTime)){
-      hist.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime });
+      hist.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime, originOpenTime:indM5Raw.originOpenTime });
       if(hist.length>15) hist.shift();
     }
     if(hist.length){
-      const histPos = hist.map(h=>{
-        let barsAgo = null;
-        for(let i=candlesM5.length-1; i>=0; i--){
-          if(candlesM5[i].openTime===h.openTime){ barsAgo=(candlesM5.length-1-i); break; }
-        }
-        return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
-      });
+      const histPos = hist.map(h=>({
+        level:h.level, type:h.type, expectDir:h.expectDir,
+        barsAgo: findBarsAgoByOpenTime(candlesM5, h.openTime),
+        originBarsAgo: findBarsAgoByOpenTime(candlesM5, h.originOpenTime),
+      }));
       const latestH = histPos[histPos.length-1];
       indM5 = { level:latestH.level, type:latestH.type, expectDir:latestH.expectDir, verdict:"REAL",
-                barsAgo: latestH.barsAgo,
+                barsAgo: latestH.barsAgo, originBarsAgo: latestH.originBarsAgo,
                 latest: (indM5Raw && indM5Raw.verdict!=="REAL") ? { level:indM5Raw.level, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null,
                 history: histPos.slice(0, -1) };
     }
@@ -1757,6 +1770,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5 ? indM5.level : null, indM5Type: indM5 ? indM5.type : null,
     indM5Verdict: indM5 ? indM5.verdict : null, indM5BarsAgo: indM5 ? indM5.barsAgo : null,
+    indM5OriginBarsAgo: indM5 ? indM5.originBarsAgo : null,
     indM5LatestLevel: indM5 && indM5.latest ? indM5.latest.level : null,
     indM5LatestVerdict: indM5 && indM5.latest ? indM5.latest.verdict : null,
     indM5LatestBarsAgo: indM5 && indM5.latest ? indM5.latest.barsAgo : null,
@@ -1994,18 +2008,18 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
     if(!S.smc3IndPersist[tradeSymbol]) S.smc3IndPersist[tradeSymbol] = [];
     const hist3 = S.smc3IndPersist[tradeSymbol];
     if(indM5Raw3 && indM5Raw3.verdict==="REAL" && !hist3.some(h=>h.openTime===indM5Raw3.openTime)){
-      hist3.push({ level:indM5Raw3.level, type:indM5Raw3.type, expectDir:indM5Raw3.expectDir, openTime:indM5Raw3.openTime });
+      hist3.push({ level:indM5Raw3.level, type:indM5Raw3.type, expectDir:indM5Raw3.expectDir, openTime:indM5Raw3.openTime, originOpenTime:indM5Raw3.originOpenTime });
       if(hist3.length>15) hist3.shift();
     }
     if(hist3.length){
-      const histPos3 = hist3.map(h=>{
-        let barsAgo=null;
-        for(let i=candlesM5.length-1; i>=0; i--){ if(candlesM5[i].openTime===h.openTime){ barsAgo=(candlesM5.length-1-i); break; } }
-        return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
-      });
+      const histPos3 = hist3.map(h=>({
+        level:h.level, type:h.type, expectDir:h.expectDir,
+        barsAgo: findBarsAgoByOpenTime(candlesM5, h.openTime),
+        originBarsAgo: findBarsAgoByOpenTime(candlesM5, h.originOpenTime),
+      }));
       const latestH3 = histPos3[histPos3.length-1];
       indM5_3 = { level:latestH3.level, type:latestH3.type, expectDir:latestH3.expectDir, verdict:"REAL",
-                  barsAgo: latestH3.barsAgo,
+                  barsAgo: latestH3.barsAgo, originBarsAgo: latestH3.originBarsAgo,
                   latest: (indM5Raw3 && indM5Raw3.verdict!=="REAL") ? { level:indM5Raw3.level, verdict:indM5Raw3.verdict, barsAgo:indM5Raw3.barsAgo } : null,
                   history: histPos3.slice(0, -1) };
     }
@@ -2015,6 +2029,7 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
     indM5Level: indM5_3 ? indM5_3.level : null, indM5Type: indM5_3 ? indM5_3.type : null,
     indM5Verdict: indM5_3 ? indM5_3.verdict : null, indM5BarsAgo: indM5_3 ? indM5_3.barsAgo : null,
+    indM5OriginBarsAgo: indM5_3 ? indM5_3.originBarsAgo : null,
     indM5LatestLevel: indM5_3 && indM5_3.latest ? indM5_3.latest.level : null,
     indM5LatestVerdict: indM5_3 && indM5_3.latest ? indM5_3.latest.verdict : null,
     indM5LatestBarsAgo: indM5_3 && indM5_3.latest ? indM5_3.latest.barsAgo : null,
@@ -2206,15 +2221,15 @@ function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
     if(!S.smc4IndPersist[tradeSymbol]) S.smc4IndPersist[tradeSymbol] = [];
     const hist4 = S.smc4IndPersist[tradeSymbol];
     if(indM5Raw && indM5Raw.verdict==="REAL" && !hist4.some(h=>h.openTime===indM5Raw.openTime)){
-      hist4.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime });
+      hist4.push({ level:indM5Raw.level, type:indM5Raw.type, expectDir:indM5Raw.expectDir, openTime:indM5Raw.openTime, originOpenTime:indM5Raw.originOpenTime });
       if(hist4.length>15) hist4.shift();
     }
     if(hist4.length){
-      const histPos4 = hist4.map(h=>{
-        let barsAgo=null;
-        for(let i=candlesM5.length-1;i>=0;i--){ if(candlesM5[i].openTime===h.openTime){ barsAgo=(candlesM5.length-1-i); break; } }
-        return { level:h.level, type:h.type, expectDir:h.expectDir, barsAgo };
-      });
+      const histPos4 = hist4.map(h=>({
+        level:h.level, type:h.type, expectDir:h.expectDir,
+        barsAgo: findBarsAgoByOpenTime(candlesM5, h.openTime),
+        originBarsAgo: findBarsAgoByOpenTime(candlesM5, h.originOpenTime),
+      }));
       // GATING (dipakai idmTaken di langkah 2): entri PALING BARU yg expectDir-nya SEARAH mainDir
       // (bukan mesti entri terakhir array, krn arah bisa gonta-ganti antar-sweep)
       const matchingDir = mainDirEarly ? [...histPos4].reverse().find(h=>h.expectDir===mainDirEarly) : null;
@@ -2223,11 +2238,11 @@ function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
         : null;
       // DISPLAY (chart): tetap tampilin entri PALING BARU apapun arahnya sbg marker utama, + riwayat
       const latestOverall = histPos4[histPos4.length-1];
-      indM5DisplayLatest = { level:latestOverall.level, type:latestOverall.type, verdict:"REAL", barsAgo:latestOverall.barsAgo };
+      indM5DisplayLatest = { level:latestOverall.level, type:latestOverall.type, verdict:"REAL", barsAgo:latestOverall.barsAgo, originBarsAgo:latestOverall.originBarsAgo };
       indM5DisplayHistory = histPos4.slice(0, -1);
     }
   }
-  const indDisp = indM5DisplayLatest || (indM5Raw ? { level:indM5Raw.level, type:indM5Raw.type, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo } : null);
+  const indDisp = indM5DisplayLatest || (indM5Raw ? { level:indM5Raw.level, type:indM5Raw.type, verdict:indM5Raw.verdict, barsAgo:indM5Raw.barsAgo, originBarsAgo: findBarsAgoByOpenTime(candlesM5, indM5Raw.originOpenTime) } : null);
   // Kalau ada candle sweep/pembalikan TAMBAHAN yang lebih baru dari IDM REAL yg udah dikonfirmasi
   // di atas (misal candle yg baru aja nyapu likuiditas lagi tapi verdict-nya masih PENDING/FAKE),
   // narasikan juga di alasan -> biar gak cuma keliatan sbg titik kecil di chart tanpa penjelasan.
@@ -2242,6 +2257,7 @@ function analyzeSmcSetupM5Only(candlesM5, tradeSymbol){
     structM5High: structM5.swingHigh, structM5Low: structM5.swingLow,
     indM5Level: indDisp ? indDisp.level : null, indM5Type: indDisp ? indDisp.type : null,
     indM5Verdict: indDisp ? indDisp.verdict : null, indM5BarsAgo: indDisp ? indDisp.barsAgo : null,
+    indM5OriginBarsAgo: indDisp ? indDisp.originBarsAgo : null,
     indM5History: indM5DisplayHistory,
     structEventsM5: scanStructureEvents(candlesM5, "m5"),
     ob: obEarly,
@@ -2976,6 +2992,16 @@ function renderSmcMiniChart(r, chartKey, execLabel, obLabel){
     const idxE = (n-1) - ev.barsAgo;
     const cxe = idxE*cw + cw/2;
     const colE = ev.type==="BOS" ? "#58a6ff" : "#f0b90b";
+    // GAYA SIKU (elbow): garis mendatar dari candle ASAL (swing yg ditembus) ke candle
+    // BREAKOUT-nya, di ketinggian level yg ditembus (originPrice) -> baru turun/naik tegak
+    // lurus ke posisi close breakout-nya (price). Mirip gaya "bracket" yg biasa dipakai di
+    // konten edukasi SMC (garis siku dari titik asal ke titik kejadian), bukan cuma titik lepas.
+    if(ev.originBarsAgo!==null && ev.originBarsAgo!==undefined && ev.originBarsAgo<n){
+      const idxO = (n-1) - ev.originBarsAgo;
+      const cxo = idxO*cw + cw/2;
+      const yyo = y(ev.originPrice);
+      svgParts.push(`<path d="M ${cxo} ${yyo} L ${cxe} ${yyo} L ${cxe} ${yye}" fill="none" stroke="${colE}" stroke-width="1.1" opacity="0.65"/>`);
+    }
     const up = ev.trend==="BULLISH"; // segitiga lancip ke atas kalau tren naik, ke bawah kalau turun
     const s = 3.2; // "jari-jari" segitiga
     const tri = up
@@ -3000,6 +3026,14 @@ function renderSmcMiniChart(r, chartKey, execLabel, obLabel){
     if(r.indM5BarsAgo!==null && r.indM5BarsAgo!==undefined && r.indM5BarsAgo < n){
       const sweepIdx = (n-1) - r.indM5BarsAgo;
       const cx = sweepIdx*cw + cw/2;
+      // GAYA SIKU: garis mendatar tebal dari candle ASAL (swing minor yg disapu) ke candle
+      // SAPUAN-nya, di ketinggian level yg disapu (sama dgn garis dashed di atas, cuma
+      // segmen asal->sapuan-nya digambar lebih tebal/solid biar "cerita"-nya kebaca).
+      if(r.indM5OriginBarsAgo!==null && r.indM5OriginBarsAgo!==undefined && r.indM5OriginBarsAgo < n){
+        const originIdx = (n-1) - r.indM5OriginBarsAgo;
+        const cxo = originIdx*cw + cw/2;
+        svgParts.push(`<line x1="${cxo}" y1="${yy}" x2="${cx}" y2="${yy}" stroke="${col}" stroke-width="1.8" opacity="0.85"/>`);
+      }
       svgParts.push(`<circle cx="${cx}" cy="${yy}" r="3.5" fill="none" stroke="${col}" stroke-width="1.2"/>`);
     }
   }
@@ -3019,13 +3053,20 @@ function renderSmcMiniChart(r, chartKey, execLabel, obLabel){
   // candle & harga asalnya masing2 (yg paling baru sudah digambar full di atas dgn garis+label
   // utama, jadi di sini cuma sisa riwayat yg lebih lama). Dibikin lebih tebal/kontras (drpd
   // sebelumnya) + digeser dikit kalau kebetulan jatuh di candle yg sama dgn marker BOS/CHoCH,
-  // supaya gak ketutupan/susah kebedain kayak sebelumnya.
+  // supaya gak ketutupan/susah kebedain kayak sebelumnya. Tiap titik jg dikasih garis siku
+  // (elbow) ke candle ASAL-nya kalau posisinya masih kebawa dlm jendela yg lagi ditampilkan.
   for(const h of indHistoryShown){
     if(h.barsAgo===null || h.barsAgo===undefined || h.barsAgo>=n) continue;
     const sweepIdxH = (n-1) - h.barsAgo;
     const overlapsEvent = eventIdxSet.has(sweepIdxH);
-    const yyh = y(h.level) + (overlapsEvent ? -9 : 0); // geser ke atas dikit biar gak numpuk pas bentrok
+    const yBase = y(h.level);
+    const yyh = yBase + (overlapsEvent ? -9 : 0); // geser ke atas dikit biar gak numpuk pas bentrok
     const cxh = sweepIdxH*cw + cw/2;
+    if(h.originBarsAgo!==null && h.originBarsAgo!==undefined && h.originBarsAgo<n){
+      const originIdxH = (n-1) - h.originBarsAgo;
+      const cxoh = originIdxH*cw + cw/2;
+      svgParts.push(`<path d="M ${cxoh} ${yBase} L ${cxh} ${yBase} L ${cxh} ${yyh}" fill="none" stroke="#a371f7" stroke-width="1" opacity="0.5"/>`);
+    }
     svgParts.push(`<circle cx="${cxh}" cy="${yyh}" r="3.5" fill="none" stroke="#a371f7" stroke-width="1.4" opacity="0.75"/>`);
   }
 
