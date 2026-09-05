@@ -1185,7 +1185,11 @@ function detectOrderBlock(candles){
     const bodyTop = Math.max(ob.open, ob.close), bodyBottom = Math.min(ob.open, ob.close);
     const optimalEntry = (bodyTop+bodyBottom)/2;
     let mitigated=false, mitigatedBarsAgo=null;
-    for(let k=obIdx+2; k<n; k++){
+    // FIX BUG: sebelumnya mulai dari obIdx+2, jadi candle TEPAT setelah OB (obIdx+1) gak pernah
+    // dicek -> kalau harga langsung retest zona di candle berikutnya, mitigasi gak kedeteksi &
+    // OB yg sudah gak valid masih dianggap fresh. Konsisten sama pola mitigasi di fungsi lain
+    // (liquidity zone, FVG) yg mulai cek persis 1 candle setelah zona terbentuk.
+    for(let k=obIdx+1; k<n; k++){
       const ck=candles[k];
       if(ck.low<=zoneTop && ck.high>=zoneBottom){ mitigated=true; mitigatedBarsAgo=(n-1-k); break; }
     }
@@ -1576,18 +1580,28 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
   // harga udah lama ngelewatin level H4 itu (wajar di tren kuat), guard ini tetap lolos & TP
   // jadi level yg SUDAH BASI (di belakang harga live), bukan target ke depan. Sekarang wajib
   // dicek jg terhadap harga LIVE M5, bukan cuma terhadap entry.
+  // FIX BUG: cabang fallback H1 di bawah sebelumnya TIDAK dicek sama sekali terhadap harga
+  // live (beda dgn cabang H4 di atasnya yg sudah dicek, lihat komentar "BUG FIX" sebelum ini).
+  // Kalau paH1.swingHigh/swingLow sudah kelewatan harga live, TP jadi level basi di belakang
+  // harga -> sekarang divalidasi jg spy konsisten dgn cabang H4 & dgn Alur 2 (analyzeSmcSetupAlt).
   if(mainDir==="BUY"){
     stopLoss = obM5.zoneBottom - buffer;
     if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
-    else { takeProfit = paH1.swingHigh; tpLevel="H1"; }
+    else if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ takeProfit=paH1.swingHigh; tpLevel="H1"; }
+    else { takeProfit=null; tpLevel=null; }
   }else{
     stopLoss = obM5.zoneTop + buffer;
     if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
-    else { takeProfit = paH1.swingLow; tpLevel="H1"; }
+    else if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ takeProfit=paH1.swingLow; tpLevel="H1"; }
+    else { takeProfit=null; tpLevel=null; }
   }
-  const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
+  const rr = (takeProfit!==null && stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   reasons.push(`Order Block M5 (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
-  reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  if(takeProfit!==null){
+    reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  }else{
+    reasons.push(`SL ketat di luar OB (${fmt(stopLoss)}), TAPI swing H4 & H1 sama2 sudah kelewatan harga live -> belum ada target TP yg valid ke depan, tunggu swing baru terbentuk.`);
+  }
 
   // --- Laporan gap: harga live (candle M5 terakhir) vs level Entry (OB) ---
   // Status ENTRY_BUY/SELL di atas muncul begitu OB+BOS ketemu, TANPA mengecek apakah
@@ -2661,7 +2675,10 @@ function buildChartZoomControls(chartKey){
     render(true);
   }));
   bar.appendChild(mkBtn("⟲", "Reset ke tampilan default", ()=>{
-    S.chartZoom[chartKey] = 1;
+    // FIX BUG: sebelumnya hardcode ke 1 (~30 candle), padahal DEFAULT_CHART_ZOOM sengaja
+    // dibuat 0.35 (~86 candle) supaya tampilan "default" lebar, lihat komentar di atas
+    // DEFAULT_CHART_ZOOM. Tombol ini harus kembali ke nilai yg sama persis dgn default itu.
+    S.chartZoom[chartKey] = DEFAULT_CHART_ZOOM;
     delete S.chartScroll[chartKey];
     render(true);
   }));
@@ -3707,7 +3724,6 @@ async function startScan(){
   document.getElementById("wsPill").className = "status-pill on";
   log(`WebSocket aktif (${chunks.length} koneksi, ${streamNames.length} stream).`, "ok");
 
-  redrawTimer = setInterval === undefined ? null : redrawTimer;
   // Tick ringan tiap 2 detik: HANYA update angka status ("X detik lalu", counter, dst),
   // JANGAN panggil render() penuh di sini -> render() penuh bongkar-ulang semua DOM
   // kartu+mini-chart (fillList -> el.innerHTML=""), yg bikin posisi scroll mini chart
