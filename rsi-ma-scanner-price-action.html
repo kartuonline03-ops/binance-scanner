@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 26/8/2026 15:38</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 6/10/2026 03:36</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -1064,6 +1064,31 @@ function detectInducement(candles){
   return Object.assign({}, best, { latest: latestDiffers ? latest : null });
 }
 
+/* Cari level minor (H/L) yg BELUM ketendang/disapu, yg jadi "target" IDM yg lagi
+   ditunggu utk arah expectDirWanted ("SELL" -> level swing High/buy-side liquidity,
+   "BUY" -> level swing Low/sell-side liquidity). Dipakai CUMA utk tampilan (kasih tau
+   user lagi nunggu level harga berapa) -> BUKAN utk logika gating, gating tetap pakai
+   detectInducement() yg nyari sweep yg SUDAH kejadian. Ambil level paling baru (paling
+   dekat dgn candle sekarang) yg masih belum disapu. */
+function findPendingInducementLevel(candles, expectDirWanted){
+  const n = candles.length;
+  if(n < IND_LOOKBACK+IND_MINOR_STRENGTH+3) return null;
+  const wantType = expectDirWanted==="SELL" ? "H" : "L";
+  const minorPts = reduceZigzag(findSwingPoints(candles, IND_MINOR_STRENGTH, IND_LOOKBACK))
+    .filter(p=>p.type===wantType);
+  for(let k=minorPts.length-1; k>=0; k--){
+    const level = minorPts[k];
+    let swept = false;
+    for(let i=level.i+1; i<n; i++){
+      const c = candles[i];
+      if(level.type==="H" && c.high>level.price && c.close<level.price){ swept=true; break; }
+      if(level.type==="L" && c.low<level.price  && c.close>level.price){ swept=true; break; }
+    }
+    if(!swept) return { level:level.price, type:level.type, barsAgo:(n-1-level.i) };
+  }
+  return null;
+}
+
 /* ============================================================
    AREA LIQUIDITY — BSL (Buy Side Liquidity) & SSL (Sell Side
    Liquidity) ala SMC/ICT. Beda dgn inducement (1 titik swing),
@@ -1521,7 +1546,13 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     if(indH1 && indH1.expectDir===mainDir && indH1.verdict==="FAKE"){
       reasons.push("H1: level liquidity minor sempat kesentuh tapi ternyata FAKE (bukan trap, lanjut breakout) -> bukan IDM valid, tunggu setup baru.");
     }else{
-      reasons.push("H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
+      const pendingIdm = findPendingInducementLevel(candlesH1, mainDir);
+      const targetTxt = pendingIdm
+        ? ` -> level yang ditunggu (${pendingIdm.type==="H"?"buy-side":"sell-side"} liquidity): ${fmt(pendingIdm.level,6)}`
+        : "";
+      reasons.push(`H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep)${targetTxt} -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.`);
+      return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir,
+        pendingIdmLevel: pendingIdm ? pendingIdm.level : null, pendingIdmType: pendingIdm ? pendingIdm.type : null });
     }
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, hasPullback:true, idmTaken:false, direction:mainDir });
   }
@@ -1809,7 +1840,13 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     if(indH1 && indH1.expectDir===mainDir && indH1.verdict==="FAKE"){
       reasons.push("H1: level liquidity minor sempat kesentuh tapi ternyata FAKE (bukan trap, lanjut breakout) -> bukan IDM valid, tunggu setup baru.");
     }else{
-      reasons.push("H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep) -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.");
+      const pendingIdm = findPendingInducementLevel(candlesH1, mainDir);
+      const targetTxt = pendingIdm
+        ? ` -> level yang ditunggu (${pendingIdm.type==="H"?"buy-side":"sell-side"} liquidity): ${fmt(pendingIdm.level,6)}`
+        : "";
+      reasons.push(`H1: inducement/liquidity minor SEARAH rencana entry BELUM diambil (belum ada sweep)${targetTxt} -> masih di area liquidity, JANGAN masuk dulu, tunggu IDM diambil.`);
+      return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, hasPullback:true, idmTaken:false, direction:mainDir,
+        pendingIdmLevel: pendingIdm ? pendingIdm.level : null, pendingIdmType: pendingIdm ? pendingIdm.type : null });
     }
     return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, dirH1, hasPullback:true, idmTaken:false, direction:mainDir });
   }
@@ -1992,8 +2029,13 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
   }
   const idmTaken = !!(indH1 && indH1.expectDir===newDir && indH1.verdict!=="FAKE");
   if(!idmTaken){
-    reasons.push(`H1: liquidity minor searah pembalikan (${newDir}) BELUM disapu -> ini pengganti "pullback" sblm masuk, tunggu dulu.`);
-    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, direction:newDir });
+    const pendingIdm = findPendingInducementLevel(candlesH1, newDir);
+    const targetTxt = pendingIdm
+      ? ` -> level yang ditunggu (${pendingIdm.type==="H"?"buy-side":"sell-side"} liquidity): ${fmt(pendingIdm.level,6)}`
+      : "";
+    reasons.push(`H1: liquidity minor searah pembalikan (${newDir}) BELUM disapu${targetTxt} -> ini pengganti "pullback" sblm masuk, tunggu dulu.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT", biasD1, dirH4, direction:newDir,
+      pendingIdmLevel: pendingIdm ? pendingIdm.level : null, pendingIdmType: pendingIdm ? pendingIdm.type : null });
   }
   reasons.push(`H1: IDM searah pembalikan sudah diambil (verdict ${indH1.verdict}) -> boleh mulai cari BOS baru di M5.`);
 
@@ -2095,8 +2137,18 @@ function analyzeSmcSetupFast(candlesH1, candlesM5, tradeSymbol){
   }
   const idmTaken = !!(indM5 && indM5.verdict==="REAL");
   if(!idmTaken){
-    reasons.push("M5: IDM/liquidity minor BELUM disapu -> belum ada rencana arah, tunggu dulu.");
-    return Object.assign({}, empty, liqExtra, { status:"WAIT" });
+    // Alur 4: arah blm diketahui sblm IDM ketemu -> tampilkan KEDUA kandidat
+    // (swing high & swing low terdekat yg msh belum disapu), bukan cuma 1 arah.
+    const pendingSell = findPendingInducementLevel(candlesM5, "SELL"); // level H (buy-side liq)
+    const pendingBuy  = findPendingInducementLevel(candlesM5, "BUY");  // level L (sell-side liq)
+    const parts = [];
+    if(pendingSell) parts.push(`buy-side liquidity (atas) di ${fmt(pendingSell.level,6)}`);
+    if(pendingBuy)  parts.push(`sell-side liquidity (bawah) di ${fmt(pendingBuy.level,6)}`);
+    const targetTxt = parts.length ? ` -> level yang ditunggu: ${parts.join(" / ")}` : "";
+    reasons.push(`M5: IDM/liquidity minor BELUM disapu${targetTxt} -> belum ada rencana arah, tunggu dulu.`);
+    return Object.assign({}, empty, liqExtra, { status:"WAIT",
+      pendingIdmLevel: pendingSell ? pendingSell.level : null, pendingIdmType: pendingSell ? "H" : null,
+      pendingIdmLevel2: pendingBuy ? pendingBuy.level : null, pendingIdmType2: pendingBuy ? "L" : null });
   }
   const mainDir = indM5.expectDir;
   reasons.push(`M5: IDM sudah diambil (sweep ${indM5.type==="H"?"buy-side":"sell-side"} liquidity minor, verdict ${indM5.verdict}) -> arah dibidik: ${mainDir}.`);
@@ -3158,7 +3210,16 @@ function renderSmcAlurBlock(r, chartKey, cfg, kind){
   }
   if(r.idmTaken!==undefined){
     const t=document.createElement("span"); t.className = "tag " + (r.idmTaken ? "confirmed" : "smc-wait");
-    t.textContent = r.idmTaken ? "IDM: sudah diambil" : "IDM: belum diambil (liquidity)";
+    if(r.idmTaken){
+      t.textContent = "IDM: sudah diambil";
+    }else if(r.pendingIdmLevel!=null && r.pendingIdmLevel2!=null){
+      // Alur 4: dua kandidat (atas & bawah), arah blm ditentukan
+      t.textContent = `IDM: belum diambil (target ${fmt(r.pendingIdmLevel2,6)} / ${fmt(r.pendingIdmLevel,6)})`;
+    }else if(r.pendingIdmLevel!=null){
+      t.textContent = `IDM: belum diambil (target ${fmt(r.pendingIdmLevel,6)})`;
+    }else{
+      t.textContent = "IDM: belum diambil (liquidity)";
+    }
     tags.appendChild(t);
   }
   if(r.bosM5!==undefined){
