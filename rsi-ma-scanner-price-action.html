@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 6/10/2026 03:36</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 13/10/2026 15:00</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -1882,29 +1882,45 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   for(let i=atrArrM5.length-1;i>=0;i--){ if(atrArrM5[i]!==null){ atrM5=atrArrM5[i]; break; } }
   const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
   const entry = obM5.optimalEntry;
+  const livePriceM5Now = candlesM5[candlesM5.length-1].close;
   let stopLoss, takeProfit, tpLevel;
+  // BUG FIX: cabang fallback di sini sebelumnya cuma dicek terhadap `entry` (level S/R, bisa
+  // jauh di belakang harga live di tren kuat) -> DAN cabang fallback-nya (giliran kedua) malah
+  // SAMA SEKALI gak dicek validitasnya, asal pakai. Akibatnya TP bisa jadi level yg sudah
+  // kelewatan/basi (di BELAKANG harga live, bahkan di SISI SALAH dari entry) -> RR keliatan
+  // gede padahal itu bukan target yg valid ke depan. Sekarang kedua cabang (H1 & H4) WAJIB
+  // divalidasi dulu terhadap harga live sebelum dipakai; kalau dua2nya gak valid, TP=null
+  // (konsisten dgn pola yg sudah dipakai di Alur 1 / analyzeSmcSetup()).
   // preferNearTp (mode scalping): prioritas TP ke swing TERDEKAT (H1) dulu supaya RR kecil tp
   // gampang/cepat kena -> fallback H4 cuma kalau H1 gak valid. Mode default (M5): kebalikannya,
   // prioritas H4 (RR lebih gede) dulu, fallback H1.
   if(mainDir==="BUY"){
     stopLoss = obM5.zoneBottom - buffer;
     if(preferNearTp){
-      if(paH1.swingHigh!==null && paH1.swingHigh>entry){ takeProfit=paH1.swingHigh; tpLevel="H1"; }
-      else { takeProfit = structH4.swingHigh; tpLevel="H4"; }
-    }else if(structH4.swingHigh!==null && structH4.swingHigh>entry){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
-    else { takeProfit = paH1.swingHigh; tpLevel="H1"; }
+      if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ takeProfit=paH1.swingHigh; tpLevel="H1"; }
+      else if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
+      else { takeProfit=null; tpLevel=null; }
+    }else if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
+    else if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ takeProfit=paH1.swingHigh; tpLevel="H1"; }
+    else { takeProfit=null; tpLevel=null; }
   }else{
     stopLoss = obM5.zoneTop + buffer;
     if(preferNearTp){
-      if(paH1.swingLow!==null && paH1.swingLow<entry){ takeProfit=paH1.swingLow; tpLevel="H1"; }
-      else { takeProfit = structH4.swingLow; tpLevel="H4"; }
-    }else if(structH4.swingLow!==null && structH4.swingLow<entry){ takeProfit=structH4.swingLow; tpLevel="H4"; }
-    else { takeProfit = paH1.swingLow; tpLevel="H1"; }
+      if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ takeProfit=paH1.swingLow; tpLevel="H1"; }
+      else if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
+      else { takeProfit=null; tpLevel=null; }
+    }else if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
+    else if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ takeProfit=paH1.swingLow; tpLevel="H1"; }
+    else { takeProfit=null; tpLevel=null; }
   }
-  const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
+  const rr = (takeProfit!==null && stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   const srLabel = mainDir==="BUY" ? "Support" : "Resistance";
   reasons.push(`${srLabel} ${execTfLabel} (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)} (disentuh ${obM5.touches}x), optimal entry (tengah zona) ${fmt(entry)}.`);
-  reasons.push(`SL ketat di luar zona ${srLabel} (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  if(takeProfit!==null){
+    reasons.push(`SL ketat di luar zona ${srLabel} (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  }else{
+    reasons.push(`SL ketat di luar zona ${srLabel} (${fmt(stopLoss)}), TAPI swing H4 & H1 sama2 sudah kelewatan harga live -> belum ada target TP yg valid ke depan, tunggu swing baru terbentuk.`);
+  }
 
   const livePriceM5 = candlesM5[candlesM5.length-1].close;
   const gapAbs = livePriceM5 - entry;
@@ -2061,19 +2077,31 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
   const entry = obM5.optimalEntry;
   // SL taruh di luar origin extreme (candle/level yg mulai CHoCH) - lebih aman drpd cuma di luar OB,
   // krn reversal br mulai & origin extreme itu bukti terakhir tren lama masih bisa narik balik ke sana.
+  const livePriceM5Now = candlesM5[candlesM5.length-1].close;
   let stopLoss, takeProfit, tpLevel;
+  // BUG FIX: sama spt Alur 1/2 — cabang fallback H1 di sini sebelumnya gak divalidasi sama
+  // sekali (asal pakai), & cabang H4 cuma dicek thd `entry` (bisa basi di tren kuat). Sekarang
+  // dua2nya wajib tervalidasi thd harga LIVE sblm dipakai, kalau gak ada yg valid -> TP=null.
   if(newDir==="BUY"){
     stopLoss = Math.min(obM5.zoneBottom, pendingRev.originLevel) - buffer;
-    if(structH4.swingHigh!==null && structH4.swingHigh>entry){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
-    else { const paH1x=analyzePriceAction(candlesH1); takeProfit = paH1x.swingHigh; tpLevel="H1"; }
+    const paH1x=analyzePriceAction(candlesH1);
+    if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
+    else if(paH1x.swingHigh!==null && paH1x.swingHigh>livePriceM5Now){ takeProfit=paH1x.swingHigh; tpLevel="H1"; }
+    else { takeProfit=null; tpLevel=null; }
   }else{
     stopLoss = Math.max(obM5.zoneTop, pendingRev.originLevel) + buffer;
-    if(structH4.swingLow!==null && structH4.swingLow<entry){ takeProfit=structH4.swingLow; tpLevel="H4"; }
-    else { const paH1x=analyzePriceAction(candlesH1); takeProfit = paH1x.swingLow; tpLevel="H1"; }
+    const paH1x=analyzePriceAction(candlesH1);
+    if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
+    else if(paH1x.swingLow!==null && paH1x.swingLow<livePriceM5Now){ takeProfit=paH1x.swingLow; tpLevel="H1"; }
+    else { takeProfit=null; tpLevel=null; }
   }
-  const rr = (stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
+  const rr = (takeProfit!==null && stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   reasons.push(`Order Block M5 (${newDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
-  reasons.push(`SL di luar OB & di luar level asal CHoCH (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  if(takeProfit!==null){
+    reasons.push(`SL di luar OB & di luar level asal CHoCH (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
+  }else{
+    reasons.push(`SL di luar OB & di luar level asal CHoCH (${fmt(stopLoss)}), TAPI swing H4 & H1 sama2 sudah kelewatan harga live -> belum ada target TP yg valid ke depan, tunggu swing baru terbentuk.`);
+  }
   reasons.push(`PERINGATAN: ini sinyal REVERSAL (melawan tren induk ${biasLabel(oldTrend)} yg sblmnya established) -> secara statistik lebih jarang & lebih berisiko drpd sinyal continuation Alur 1/2, gunakan size lebih kecil.`);
 
   if(tradeSymbol) delete S.smc3Pending[tradeSymbol]; // kandidat sudah "lunas" jadi entry -> reset biar gak nyangkut
