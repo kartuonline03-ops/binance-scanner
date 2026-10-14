@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 13/10/2026 15:00</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 14/10/2026 11:10</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -558,6 +558,8 @@ const S = {
   smc2IndPersist: {},                            // persist IND (REAL) M5, terpisah dari smcIndPersist alur 1
   smc2IndPersistH1: {},                          // persist IDM H1, terpisah dari smcIndPersistH1 alur 1
   smc2SrPersist: {},                             // tradeSymbol -> {BUY:{...zona}, SELL:{...zona}} — zona S/R
+  smc2TpPersist: {},                             // persistKey -> {level, tpLevel, dir} — TP terakhir yg valid, dipakai hysteresis anti-flicker
+  smc3TpPersist: {},                             // tradeSymbol -> {level, tpLevel, dir} — sama spt smc2TpPersist, versi Alur 3
                                                   // DIPERTAHANKAN selama belum mitigated, biar gak "lompat-lompat"
                                                   // ke level lain tiap kali candle baru geser jendela scan.
   // --- Alur 3 (Reversal berbasis CHoCH) — numpang S.smcCandles jg, TIDAK ada candle store sendiri ---
@@ -1883,7 +1885,7 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   const buffer = (atrM5!==null ? atrM5 : (obM5.zoneTop-obM5.zoneBottom)) * SMC_ATR_SL_BUFFER_MULT;
   const entry = obM5.optimalEntry;
   const livePriceM5Now = candlesM5[candlesM5.length-1].close;
-  let stopLoss, takeProfit, tpLevel;
+  let stopLoss, rawTakeProfit, rawTpLevel;
   // BUG FIX: cabang fallback di sini sebelumnya cuma dicek terhadap `entry` (level S/R, bisa
   // jauh di belakang harga live di tren kuat) -> DAN cabang fallback-nya (giliran kedua) malah
   // SAMA SEKALI gak dicek validitasnya, asal pakai. Akibatnya TP bisa jadi level yg sudah
@@ -1897,22 +1899,45 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   if(mainDir==="BUY"){
     stopLoss = obM5.zoneBottom - buffer;
     if(preferNearTp){
-      if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ takeProfit=paH1.swingHigh; tpLevel="H1"; }
-      else if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
-      else { takeProfit=null; tpLevel=null; }
-    }else if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
-    else if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ takeProfit=paH1.swingHigh; tpLevel="H1"; }
-    else { takeProfit=null; tpLevel=null; }
+      if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ rawTakeProfit=paH1.swingHigh; rawTpLevel="H1"; }
+      else if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ rawTakeProfit=structH4.swingHigh; rawTpLevel="H4"; }
+      else { rawTakeProfit=null; rawTpLevel=null; }
+    }else if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ rawTakeProfit=structH4.swingHigh; rawTpLevel="H4"; }
+    else if(paH1.swingHigh!==null && paH1.swingHigh>livePriceM5Now){ rawTakeProfit=paH1.swingHigh; rawTpLevel="H1"; }
+    else { rawTakeProfit=null; rawTpLevel=null; }
   }else{
     stopLoss = obM5.zoneTop + buffer;
     if(preferNearTp){
-      if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ takeProfit=paH1.swingLow; tpLevel="H1"; }
-      else if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
-      else { takeProfit=null; tpLevel=null; }
-    }else if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
-    else if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ takeProfit=paH1.swingLow; tpLevel="H1"; }
-    else { takeProfit=null; tpLevel=null; }
+      if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ rawTakeProfit=paH1.swingLow; rawTpLevel="H1"; }
+      else if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ rawTakeProfit=structH4.swingLow; rawTpLevel="H4"; }
+      else { rawTakeProfit=null; rawTpLevel=null; }
+    }else if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ rawTakeProfit=structH4.swingLow; rawTpLevel="H4"; }
+    else if(paH1.swingLow!==null && paH1.swingLow<livePriceM5Now){ rawTakeProfit=paH1.swingLow; rawTpLevel="H1"; }
+    else { rawTakeProfit=null; rawTpLevel=null; }
   }
+
+  // REVISI: ANTI-FLICKER. File ini poll ulang tiap 4 detik (bukan nunggu candle close), dan
+  // validasi TP di atas ngecek thd harga LIVE yg terus goyang. Kalau harga lagi mepet persis
+  // di sekitar level swing, validasinya bisa gonta-ganti tiap poll (TP "hilang timbul") padahal
+  // cuma noise kecil, bukan beneran nembus levelnya. Solusinya: hysteresis — begitu dapat TP
+  // valid, levelnya disimpan (per persistKey); kalau poll berikutnya levelnya "keliatan" gak
+  // valid lagi tapi bedanya tipis (masih dlm dead-zone sebesar tpHystBuffer), TP LAMA tetap
+  // dipertahankan dulu. TP baru benar2 di-null-kan kalau harga udah jelas2 nembus dgn margin.
+  const tpHystBuffer = (atrM5!==null ? atrM5 : 0) * 0.3;
+  const prevTp = persistKey ? S.smc2TpPersist[persistKey] : null;
+  let takeProfit, tpLevel;
+  if(rawTakeProfit!==null){
+    takeProfit = rawTakeProfit; tpLevel = rawTpLevel;
+    if(persistKey) S.smc2TpPersist[persistKey] = { level: rawTakeProfit, tpLevel: rawTpLevel, dir: mainDir };
+  }else if(prevTp && prevTp.dir===mainDir && (
+      mainDir==="BUY" ? (prevTp.level > livePriceM5Now - tpHystBuffer) : (prevTp.level < livePriceM5Now + tpHystBuffer)
+    )){
+    takeProfit = prevTp.level; tpLevel = prevTp.tpLevel;
+  }else{
+    takeProfit = null; tpLevel = null;
+    if(persistKey) delete S.smc2TpPersist[persistKey];
+  }
+
   const rr = (takeProfit!==null && stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   const srLabel = mainDir==="BUY" ? "Support" : "Resistance";
   reasons.push(`${srLabel} ${execTfLabel} (${mainDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)} (disentuh ${obM5.touches}x), optimal entry (tengah zona) ${fmt(entry)}.`);
@@ -2078,23 +2103,43 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
   // SL taruh di luar origin extreme (candle/level yg mulai CHoCH) - lebih aman drpd cuma di luar OB,
   // krn reversal br mulai & origin extreme itu bukti terakhir tren lama masih bisa narik balik ke sana.
   const livePriceM5Now = candlesM5[candlesM5.length-1].close;
-  let stopLoss, takeProfit, tpLevel;
+  let stopLoss, rawTakeProfit, rawTpLevel;
   // BUG FIX: sama spt Alur 1/2 — cabang fallback H1 di sini sebelumnya gak divalidasi sama
   // sekali (asal pakai), & cabang H4 cuma dicek thd `entry` (bisa basi di tren kuat). Sekarang
   // dua2nya wajib tervalidasi thd harga LIVE sblm dipakai, kalau gak ada yg valid -> TP=null.
   if(newDir==="BUY"){
     stopLoss = Math.min(obM5.zoneBottom, pendingRev.originLevel) - buffer;
     const paH1x=analyzePriceAction(candlesH1);
-    if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ takeProfit=structH4.swingHigh; tpLevel="H4"; }
-    else if(paH1x.swingHigh!==null && paH1x.swingHigh>livePriceM5Now){ takeProfit=paH1x.swingHigh; tpLevel="H1"; }
-    else { takeProfit=null; tpLevel=null; }
+    if(structH4.swingHigh!==null && structH4.swingHigh>livePriceM5Now){ rawTakeProfit=structH4.swingHigh; rawTpLevel="H4"; }
+    else if(paH1x.swingHigh!==null && paH1x.swingHigh>livePriceM5Now){ rawTakeProfit=paH1x.swingHigh; rawTpLevel="H1"; }
+    else { rawTakeProfit=null; rawTpLevel=null; }
   }else{
     stopLoss = Math.max(obM5.zoneTop, pendingRev.originLevel) + buffer;
     const paH1x=analyzePriceAction(candlesH1);
-    if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ takeProfit=structH4.swingLow; tpLevel="H4"; }
-    else if(paH1x.swingLow!==null && paH1x.swingLow<livePriceM5Now){ takeProfit=paH1x.swingLow; tpLevel="H1"; }
-    else { takeProfit=null; tpLevel=null; }
+    if(structH4.swingLow!==null && structH4.swingLow<livePriceM5Now){ rawTakeProfit=structH4.swingLow; rawTpLevel="H4"; }
+    else if(paH1x.swingLow!==null && paH1x.swingLow<livePriceM5Now){ rawTakeProfit=paH1x.swingLow; rawTpLevel="H1"; }
+    else { rawTakeProfit=null; rawTpLevel=null; }
   }
+
+  // REVISI: ANTI-FLICKER, sama persis alasannya spt di Alur 2 — poll ulang tiap 4 detik thd
+  // harga live bikin TP bisa "hilang timbul" kalau harga lagi mepet di sekitar level swing.
+  // Hysteresis: TP valid terakhir ditahan dulu (per tradeSymbol) selama blm ditembus dgn
+  // margin yg jelas, baru beneran di-null-kan kalau sudah pasti lewat.
+  const tpHystBuffer = (atrM5!==null ? atrM5 : 0) * 0.3;
+  const prevTp = tradeSymbol ? S.smc3TpPersist[tradeSymbol] : null;
+  let takeProfit, tpLevel;
+  if(rawTakeProfit!==null){
+    takeProfit = rawTakeProfit; tpLevel = rawTpLevel;
+    if(tradeSymbol) S.smc3TpPersist[tradeSymbol] = { level: rawTakeProfit, tpLevel: rawTpLevel, dir: newDir };
+  }else if(prevTp && prevTp.dir===newDir && (
+      newDir==="BUY" ? (prevTp.level > livePriceM5Now - tpHystBuffer) : (prevTp.level < livePriceM5Now + tpHystBuffer)
+    )){
+    takeProfit = prevTp.level; tpLevel = prevTp.tpLevel;
+  }else{
+    takeProfit = null; tpLevel = null;
+    if(tradeSymbol) delete S.smc3TpPersist[tradeSymbol];
+  }
+
   const rr = (takeProfit!==null && stopLoss!==entry) ? Math.abs(takeProfit-entry)/Math.abs(entry-stopLoss) : null;
   reasons.push(`Order Block M5 (${newDir}) ketemu: zona ${fmt(obM5.zoneBottom)} - ${fmt(obM5.zoneTop)}, optimal entry (50% body) ${fmt(entry)}.`);
   if(takeProfit!==null){
@@ -3734,8 +3779,10 @@ async function startScan(){
   S.sndCandles={ d1:{}, h4:{}, h1:{}, m5:{}, m1:{} }; S.sndResults={};
   S.smc2Results={}; // Alur 2 numpang S.smcCandles.m5, gak ada candle store sendiri yg perlu direset
   // S.smc2IndPersist & S.smc2IndPersistH1 SENGAJA TIDAK direset, sama alasannya spt smcIndPersist di atas.
+  // S.smc2TpPersist jg SENGAJA TIDAK direset (hysteresis TP anti-flicker, sama alasannya).
   S.smc3Results={}; // Alur 3 jg numpang S.smcCandles yg sama, gak ada candle store sendiri
   // S.smc3Pending & S.smc3IndPersistH1 SENGAJA TIDAK direset jg, sama alasannya spt di atas.
+  // S.smc3TpPersist jg SENGAJA TIDAK direset (hysteresis TP anti-flicker, sama alasannya).
   S.smc4Results={}; // Alur 4 jg numpang S.smcCandles yg sama, gak ada candle store sendiri
   // S.smc4IndPersist SENGAJA TIDAK direset jg, sama alasannya spt di atas.
   S.pollingMode=false; S.wsZeroStrikes=0; stopPolling();
