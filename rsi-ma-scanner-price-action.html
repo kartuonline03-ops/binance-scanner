@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 14/10/2026 11:10</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16/10/2026 11:24</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -1216,7 +1216,11 @@ function detectOrderBlock(candles){
     // dicek -> kalau harga langsung retest zona di candle berikutnya, mitigasi gak kedeteksi &
     // OB yg sudah gak valid masih dianggap fresh. Konsisten sama pola mitigasi di fungsi lain
     // (liquidity zone, FVG) yg mulai cek persis 1 candle setelah zona terbentuk.
-    for(let k=obIdx+1; k<n; k++){
+    // FIX BUG #2 (penyebab "Entry/TP/SL hilang timbul"): loop ini jg sebelumnya ikut meriksa
+    // candle TERAKHIR (k<n) yg di arsitektur poll 4-detik ini SELALU candle live/blm close ->
+    // OB bisa kebolak-balik fresh/mitigated tiap poll cuma gara2 noise wick candle yg msh
+    // berjalan. Sekarang cuma candle yg SUDAH CLOSE (k<n-1) yg berhak nentuin mitigated.
+    for(let k=obIdx+1; k<n-1; k++){
       const ck=candles[k];
       if(ck.low<=zoneTop && ck.high>=zoneBottom){ mitigated=true; mitigatedBarsAgo=(n-1-k); break; }
     }
@@ -1254,19 +1258,30 @@ function detectSupportResistance(candles, wantDir, tradeSymbol){
 
   // cek zona yg udah dipersist utk 1 arah: masih valid (blm mitigated) & posisinya msh masuk akal?
   // kalau mitigated/gak masuk akal lagi, dihapus dari store (supaya nanti di-scan ulang dari nol).
+  //
+  // BUG FIX (penyebab utama "Entry/TP/SL hilang timbul"): loop mitigasi di bawah sebelumnya
+  // ikut memeriksa candle TERAKHIR (k<n), padahal di arsitektur poll 4-detik ini candle
+  // terakhir SELALU candle yg masih berjalan/live (high-low-nya terus berubah tiap poll, lihat
+  // mergeCandleRow()). Karena zona S/R memang sengaja ditaruh DEKAT harga skrg (tujuannya nunggu
+  // retest), begitu harga live nyenggol dikit ke zona -> langsung dianggap "mitigated" & zona
+  // DIHAPUS, lalu di-scan ulang dari nol poll berikutnya (bisa dapat zona beda/sama) -> keliatan
+  // "hilang timbul". Sekarang mitigasi CUMA dicek dari candle yg SUDAH CLOSE (k<n-1) — candle yg
+  // masih berjalan gak berhak nentuin zona mitigated, baru dihitung kalau sudah resmi close
+  // dgn body/range yg nembus zona.
   function prunePersisted(d){
     if(!store) return null;
     const persisted = store[d];
     if(!persisted) return null;
     let mitigated=false;
-    for(let k=persisted.lastCheckedIdx+1; k<n; k++){
+    const checkUntil = n-1; // exclusive — candle index n-1 (live/belum close) TIDAK diperiksa
+    for(let k=persisted.lastCheckedIdx+1; k<checkUntil; k++){
       const c = candles[k];
       if(c.low<=persisted.zoneTop && c.high>=persisted.zoneBottom){ mitigated=true; break; }
     }
     if(mitigated){ delete store[d]; return null; }
     const okPos = d==="BUY" ? price >= persisted.zoneBottom*0.985 : price <= persisted.zoneTop*1.015;
     if(!okPos){ delete store[d]; return null; }
-    persisted.lastCheckedIdx = n-1; // majukan penanda supaya scan mitigasi berikutnya gak ulang dari awal
+    persisted.lastCheckedIdx = checkUntil-1; // majukan penanda cuma sampai candle yg udah close terakhir
     return persisted;
   }
 
@@ -2401,8 +2416,12 @@ function detectSupplyDemandZones(candles){
     if(!leftImpulsively) continue;
 
     // fresh check: blm ada candle SETELAH base yg body-nya (bukan cuma wick) nembus/masuk ke zona
+    // BUG FIX (penyebab "hilang timbul" jg di mode SND): loop ini sebelumnya ikut meriksa candle
+    // TERAKHIR (j<n) yg di arsitektur poll 4-detik ini SELALU candle live/blm close -> body-nya
+    // (pakai close yg terus bergerak) bisa nyentuh zona sesaat lalu balik lagi tiap poll -> zona
+    // kebolak-balik fresh/gak fresh. Sekarang cuma candle yg SUDAH CLOSE (j<n-1) yg dihitung.
     let fresh = true, touchedBarsAgo = null;
-    for(let j=pt.i+1; j<n; j++){
+    for(let j=pt.i+1; j<n-1; j++){
       const c = candles[j];
       const bodyLo = Math.min(c.open,c.close), bodyHi = Math.max(c.open,c.close);
       if(bodyHi >= bottom && bodyLo <= top){ fresh=false; touchedBarsAgo=(n-1-j); }
@@ -2419,14 +2438,21 @@ function detectSupplyDemandZones(candles){
 
 // Cek apakah candle TF ini (M5/M1) sudah masuk ke zona & candle TERAKHIR yg sudah CLOSE
 // nunjukin pola reversal (engulfing/hammer/shooting star) searah mainDir.
+// BUG FIX: komentar di atas bilang "candle TERAKHIR yg sudah CLOSE", tapi kodenya sebelumnya
+// pakai candlesTf apa adanya ke detectReversalPattern() -> otomatis makai candle PALING AKHIR
+// yg di arsitektur poll 4-detik ini SELALU candle live/blm close (bentuknya masih berubah2 tiap
+// poll) -> pattern bisa kedeteksi lalu ilang lagi tiap poll cuma gara2 noise. touchedZone sengaja
+// TETAP pakai candle live (itu memang maksudnya "zona lagi disentuh SEKARANG"), tapi deteksi pola
+// reversal-nya sekarang cuma pakai candle yg sudah CLOSE, sesuai yg tertulis di komentar.
 function checkZoneReversalConfirm(candlesTf, zone, mainDir){
   if(!candlesTf || candlesTf.length<3 || !zone) return { confirmed:false, touchedZone:false };
   const last = candlesTf[candlesTf.length-1];
   const touchedZone = last.low <= zone.top && last.high >= zone.bottom;
   if(!touchedZone) return { confirmed:false, touchedZone:false };
-  const pattern = detectReversalPattern(candlesTf);
+  const closedCandles = candlesTf.slice(0, candlesTf.length-1); // buang candle live/blm close
+  const pattern = detectReversalPattern(closedCandles);
   const confirmed = !!(pattern && pattern.direction===mainDir);
-  return { confirmed, touchedZone:true, pattern: pattern?pattern.type:null, entryCandle:last };
+  return { confirmed, touchedZone:true, pattern: pattern?pattern.type:null, entryCandle: closedCandles[closedCandles.length-1] || last };
 }
 
 function biasLabelSnd(trend){ return biasLabel(trend); }
