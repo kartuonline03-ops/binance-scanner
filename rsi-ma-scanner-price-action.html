@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 16/10/2026 11:24</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18/10/2026 07:58</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -899,10 +899,15 @@ function analyzePriceAction(candles){
       breakoutUp:false, breakoutDown:false, pattern:null, strongBody:false, reasons:["Price action: data candle belum cukup untuk deteksi swing high/low"] };
   }
   const { swingHigh, swingLow } = findSwingLevels(candles, PA_SWING_LOOKBACK, PA_SWING_STRENGTH);
-  const last = candles[n-1];
+  // BUG FIX: sama persis akar masalahnya spt di analyzeStructure() — reasons di bawah udah
+  // bilang "candle terakhir yg sudah close", tapi kodenya sebelumnya pakai candles[n-1] yg di
+  // arsitektur poll 4-detik ini SELALU candle live/blm close -> breakoutUp/Down & pattern bisa
+  // kedeteksi lalu ilang lagi tiap poll cuma gara2 noise harga live, bukan beneran close breakout.
+  const last = (n>=2) ? candles[n-2] : candles[n-1];
   const li = candleBodyInfo(last);
   const strongBody = li.bodyRatio >= PA_BODY_MIN_RATIO;
-  const pattern = detectReversalPattern(candles);
+  const closedCandlesForPattern = (n>=2) ? candles.slice(0, n-1) : candles;
+  const pattern = detectReversalPattern(closedCandlesForPattern);
 
   const breakoutUp   = swingHigh!==null && last.close > swingHigh && li.bullish && strongBody;
   const breakoutDown = swingLow!==null  && last.close < swingLow  && !li.bullish && strongBody;
@@ -988,7 +993,15 @@ function analyzeStructure(candles, swingStrength, lookback){
   if(lastH.price>prevH.price && lastL.price>prevL.price) trend="BULLISH";       // Higher High + Higher Low
   else if(lastH.price<prevH.price && lastL.price<prevL.price) trend="BEARISH";  // Lower High + Lower Low
 
-  const last = candles[n-1];
+  // BUG FIX (akar dari banyak "hilang timbul" sebelumnya — ini fungsi PALING sering dipakai
+  // di semua Alur): komentar fungsi ini dari awal sudah bilang event BOS/CHoCH harus dari
+  // candle yg SUDAH CLOSE, tapi kodenya sebelumnya pakai candles[n-1] — yg di arsitektur poll
+  // 4-detik ini SELALU candle live/blm close (close & body-nya terus berubah tiap poll). Akibatnya
+  // event BOS/CHoCH (dan strongBody-nya) bisa kedeteksi lalu ilang lagi tiap poll cuma gara2
+  // harga live ketarik dikit ke atas/bawah level swing, BUKAN beneran breakout yg solid. Ini
+  // sumber flicker paling luas krn structD1/H4/H1/M5/M1 di SEMUA alur manggil fungsi ini.
+  // Sekarang pakai candle TERAKHIR YG SUDAH CLOSE (n-2), bukan candle live (n-1).
+  const last = (n>=2) ? candles[n-2] : candles[n-1];
   const li = candleBodyInfo(last);
   const strongBody = li.bodyRatio >= PA_BODY_MIN_RATIO;
 
@@ -1668,6 +1681,17 @@ function analyzeSmcSetup(candlesD1, candlesH4, candlesH1, candlesM5, tradeSymbol
     reasons.push(`Harga live (${fmt(livePriceM5)}) malah ${fmt(Math.abs(gapPct),2)}% di SISI BERLAWANAN dari level Entry (${fmt(entry)}) -> harga sudah "kebablasan" balik ke arah OB, entry di level ini lebih dekat/mudah kena kalau limit order.`);
   }
 
+  // BUG FIX: status ENTRY_BUY/SELL di bawah sebelumnya dikembalikan TANPA cek apakah takeProfit
+  // berhasil ditemukan -> begitu H1 & H4 sama2 basi (lihat blok TP di atas), sinyal "siap entry"
+  // tetap muncul tapi TP-nya kosong ("-"). Entry tanpa target itu gak lengkap buat dieksekusi,
+  // jadi diturunkan ke WAIT dulu kalau TP masih null (reasons penjelasannya sudah ada di atas).
+  if(takeProfit===null){
+    return Object.assign({}, liqExtra, {
+      status:"WAIT", direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
+      ob: obM5, entry, stopLoss, takeProfit:null, tpLevel:null, rr:null, atrM5, fvgH1: fvgH1Match,
+      structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    });
+  }
   return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, hasPullback:true, idmTaken:true, bosM5:true,
@@ -1974,6 +1998,15 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
     reasons.push(`Harga live (${fmt(livePriceM5)}) malah ${fmt(Math.abs(gapPct),2)}% di SISI BERLAWANAN dari level Entry (${fmt(entry)}) -> harga sudah "kebablasan" balik ke arah zona ${srLabel}, entry di level ini lebih dekat/mudah kena kalau limit order.`);
   }
 
+  // BUG FIX: sama spt Alur 1 — jangan kasih status ENTRY kalau TP masih null (belum ada target
+  // valid), turunkan ke WAIT dulu (reasons penjelasannya sudah ada di atas).
+  if(takeProfit===null){
+    return Object.assign({}, liqExtra, {
+      status:"WAIT", direction: mainDir, biasD1, dirH4, dirH1, hasPullback:true, idmTaken:true, bosM5:true,
+      ob: obM5, entry, stopLoss, takeProfit:null, tpLevel:null, rr:null, atrM5,
+      structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    });
+  }
   return Object.assign({}, liqExtra, {
     status: mainDir==="BUY" ? "ENTRY_BUY" : "ENTRY_SELL",
     direction: mainDir, biasD1, dirH4, dirH1, hasPullback:true, idmTaken:true, bosM5:true,
@@ -2161,6 +2194,17 @@ function analyzeSmcSetupReversal(candlesD1, candlesH4, candlesH1, candlesM5, tra
     reasons.push(`SL di luar OB & di luar level asal CHoCH (${fmt(stopLoss)}), TP dibidik ke swing ${tpLevel} terdekat (${fmt(takeProfit)})${rr? ` -> RR ~${fmt(rr,2)}`:""}.`);
   }else{
     reasons.push(`SL di luar OB & di luar level asal CHoCH (${fmt(stopLoss)}), TAPI swing H4 & H1 sama2 sudah kelewatan harga live -> belum ada target TP yg valid ke depan, tunggu swing baru terbentuk.`);
+  }
+  // BUG FIX: sama spt Alur 1/2 — jangan kasih status ENTRY kalau TP masih null. Kandidat CHoCH
+  // di S.smc3Pending CUMA dihapus kalau beneran "lunas" jadi entry (TP valid) — kalau TP-nya
+  // doang yg belum ketemu, kandidat dibiarkan nyangkut dulu (jangan di-reset), krn CHoCH/BOS-nya
+  // sendiri sudah valid, tinggal nunggu swing baru buat TP, bukan mulai deteksi dari nol lagi.
+  if(takeProfit===null){
+    return Object.assign({}, liqExtra, {
+      status:"WAIT", direction: newDir, biasD1, dirH4, idmTaken:true, bosM5:true,
+      ob: obM5, entry, stopLoss, takeProfit:null, tpLevel:null, rr:null, atrM5,
+      structD1, structH4, structH1: analyzeStructure(candlesH1), reasons,
+    });
   }
   reasons.push(`PERINGATAN: ini sinyal REVERSAL (melawan tren induk ${biasLabel(oldTrend)} yg sblmnya established) -> secara statistik lebih jarang & lebih berisiko drpd sinyal continuation Alur 1/2, gunakan size lebih kecil.`);
 
