@@ -236,7 +236,7 @@
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
       <div class="status-pill off" id="wsPill">WS: OFF</div>
-      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 18/10/2026 07:58</div>
+      <div id="revisiTag" style="font-family:var(--mono); font-size:10px; color:var(--amber); white-space:nowrap;">Revisi: 19/10/2026 14:14</div>
     </div>
   </div>
   <button type="button" id="headerToggleBtn" title="Sembunyikan/tampilkan info header">▲</button>
@@ -1036,9 +1036,15 @@ function detectInducement(candles){
   // Cari, dari level minor paling baru mundur ke belakang, sweep candle PALING BARU yg ditemukan
   let best = null;
   let latest = null; // sweep PALING BARU apapun verdict-nya (buat marker "penanda" candle berjalan)
+  // BUG FIX (penyebab "sinyal hilang setelah beberapa menit" — IDM termasuk syarat gating utama
+  // Alur 1/2/4): dua loop di bawah sebelumnya ikut meriksa/memakai candle TERAKHIR (k<n / n-1)
+  // yg di arsitektur poll 4-detik ini SELALU candle live/blm close. Akibatnya: (1) "sweep" bisa
+  // kedeteksi dari wick candle yg msh berjalan lalu ilang lagi kalau harganya balik, DAN (2)
+  // verdict REAL/FAKE/PENDING bisa berubah2 krn window konfirmasinya ikut mengandalkan close candle
+  // live yg msh goyang. Sekarang kedua loop cuma pakai candle yg SUDAH CLOSE (n-1 dieksklusi).
   for(let k=minorPts.length-1; k>=0; k--){
     const level = minorPts[k];
-    for(let i=level.i+1; i<n; i++){
+    for(let i=level.i+1; i<n-1; i++){
       const c = candles[i];
       let swept=false;
       if(level.type==="H" && c.high>level.price && c.close<level.price) swept=true;   // sweep buy-side liquidity
@@ -1046,7 +1052,7 @@ function detectInducement(candles){
       if(!swept) continue;
 
       const expectDir = level.type==="H" ? "SELL" : "BUY"; // arah yg "diharapkan" kalau ini inducement asli
-      const windowEnd = Math.min(n-1, i+IND_CONFIRM_WINDOW);
+      const windowEnd = Math.min(n-2, i+IND_CONFIRM_WINDOW);
       let verdict = "PENDING";
       for(let j=i+1; j<=windowEnd; j++){
         const cj=candles[j], lij=candleBodyInfo(cj);
@@ -1091,10 +1097,12 @@ function findPendingInducementLevel(candles, expectDirWanted){
   const wantType = expectDirWanted==="SELL" ? "H" : "L";
   const minorPts = reduceZigzag(findSwingPoints(candles, IND_MINOR_STRENGTH, IND_LOOKBACK))
     .filter(p=>p.type===wantType);
+  // BUG FIX: sama pola spt detectInducement() — exclude candle live (n-1) dari pengecekan swept,
+  // biar level "target IDM" yg ditampilkan ke user gak ikut kedip2 krn noise candle yg msh jalan.
   for(let k=minorPts.length-1; k>=0; k--){
     const level = minorPts[k];
     let swept = false;
-    for(let i=level.i+1; i<n; i++){
+    for(let i=level.i+1; i<n-1; i++){
       const c = candles[i];
       if(level.type==="H" && c.high>level.price && c.close<level.price){ swept=true; break; }
       if(level.type==="L" && c.low<level.price  && c.close>level.price){ swept=true; break; }
@@ -1144,8 +1152,13 @@ function buildLiquidityZone(cluster, type, candles){
   const prices = cluster.map(p=>p.price);
   const top = Math.max(...prices), bottom = Math.min(...prices);
   const lastIdx = Math.max(...cluster.map(p=>p.i));
+  // BUG FIX: sama pola spt fungsi2 mitigasi lain — loop ini sebelumnya ikut meriksa candle
+  // TERAKHIR (i<n) yg SELALU candle live/blm close (utk D1, ini candle HARI INI yg msh jalan) ->
+  // status "swept" BSL/SSL bisa kedeteksi lalu ilang lagi tiap poll cuma gara2 harga intraday
+  // nyenggol level dikit, padahal candle harian itu blm resmi close. Sekarang cuma candle yg
+  // SUDAH CLOSE (i<n-1) yg berhak nentuin swept.
   let swept = false, sweptBarsAgo = null;
-  for(let i=lastIdx+1;i<n;i++){
+  for(let i=lastIdx+1;i<n-1;i++){
     const c = candles[i];
     if(type==="H" && c.high>top){ swept=true; sweptBarsAgo=(n-1-i); break; }
     if(type==="L" && c.low<bottom){ swept=true; sweptBarsAgo=(n-1-i); break; }
@@ -1387,10 +1400,13 @@ function detectFVG(candles, lookback){
   const list = [];
   for(let i=start; i<=n-2; i++){
     const c1 = candles[i-1], c3 = candles[i+1];
+    // BUG FIX: sama pola spt fungsi2 mitigasi lain — kedua loop di bawah sebelumnya ikut
+    // meriksa candle TERAKHIR (k<n) yg SELALU candle live/blm close -> status "filled/touched"
+    // FVG bisa kedip2 krn noise. Sekarang cuma candle yg SUDAH CLOSE (k<n-1) yg dihitung.
     if(c3.low > c1.high){ // bullish FVG
       const bottom = c1.high, top = c3.low;
       let touched=false, touchedBarsAgo=null;
-      for(let k=i+2; k<n; k++){
+      for(let k=i+2; k<n-1; k++){
         const ck=candles[k];
         if(ck.low<=top && ck.high>=bottom){ touched=true; touchedBarsAgo=(n-1-k); break; }
       }
@@ -1399,7 +1415,7 @@ function detectFVG(candles, lookback){
     if(c3.high < c1.low){ // bearish FVG
       const top = c1.low, bottom = c3.high;
       let touched=false, touchedBarsAgo=null;
-      for(let k=i+2; k<n; k++){
+      for(let k=i+2; k<n-1; k++){
         const ck=candles[k];
         if(ck.low<=top && ck.high>=bottom){ touched=true; touchedBarsAgo=(n-1-k); break; }
       }
@@ -1774,6 +1790,14 @@ function analyzeSmcSetupAlt(candlesD1, candlesH4, candlesH1, candlesM5, tradeSym
   const srEarly = detectSupportResistance(candlesM5, undefined, persistKey); // generik (blm tau arah) -> ilustrasi chart selama WAIT
 
   const liqExtra = {
+    // BUG FIX (tampilan): biasStartTf dibawa ke hasil, supaya render tau tag "D1 bias"/"H4 arah"
+    // mana yg BENERAN jadi dasar penentuan arah vs yg cuma info numpang lewat. Sebelumnya
+    // structD1/structH4 SELALU dihitung & biasD1/dirH4 SELALU ikut di-return apapun biasStartTf-
+    // nya (D1/H4/H1) -> kalau mode "H1" (D1 & H4 sengaja di-skip dari gating), tag "D1 bias: turun"
+    // / "H4 arah: turun" tetap nongol di kartu seolah2 itu yg nentuin arah, padahal arah sebenarnya
+    // murni dari H1 sendiri -> kelihatan kontradiktif (mis. tag D1/H4 bilang turun tapi sinyalnya
+    // BUY), padahal bukan bug logika, cuma tag yg gak relevan ikut ditampilkan.
+    biasStartTf,
     bslZone: liqD1.bsl, sslZone: liqD1.ssl,
     structM5Trend: structM5early.trend, structM5Event: structM5early.event,
     structM5High: structM5early.swingHigh, structM5Low: structM5early.swingLow,
@@ -2525,6 +2549,7 @@ function analyzeSndSetup(candlesD1, candlesH4, candlesH1, candlesM5, candlesM1, 
 
   const snd = detectSupplyDemandZones(candlesH1);
   const liqExtra = {
+    biasStartTf, // REVISI: sama spt Alur 2 — biar render gak nampilin tag D1/H4 yg sebenarnya di-skip
     demandZone: snd.demand, supplyZone: snd.supply,
     miniCandles: candlesM5.slice(-120).map(c=>({open:c.open,high:c.high,low:c.low,close:c.close})),
   };
@@ -3344,8 +3369,25 @@ function renderSmcAlurBlock(r, chartKey, cfg, kind){
   wrap.appendChild(head);
 
   const tags = document.createElement("div"); tags.className="tags";
-  if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`${cfg.topLabel} bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
-  if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`${cfg.midLabel} arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
+  // BUG FIX (tampilan, bukan logika arah) — SAMA PERSIS alasannya spt di buildSmcCard() di bawah:
+  // r.biasD1/r.dirH4 SELALU dihitung & SELALU ikut di-return oleh Alur 2 (analyzeSmcSetupAlt) apapun
+  // biasStartTf-nya (D1/H4/H1), krn fungsi ini jg dipakai render Alur 1 & 3 yg TIDAK punya konsep
+  // biasStartTf (selalu D1->H4, r.biasStartTf bakal undefined utk keduanya -> tag ttp tampil spt
+  // biasa). Kalau Alur 2 mode "H1" (D1 & H4 sengaja di-skip dari gating arah), tag "D1 bias: turun"
+  // / "H4 arah: turun" dulu tetap nongol seolah2 itu yg nentuin arah, padahal diabaikan & arah
+  // sebenarnya murni dari H1 -> kartu kelihatan kontradiktif (tag bilang turun tp sinyal BUY).
+  const bst = r.biasStartTf; // undefined (Alur1/3, selalu D1->H4) | "D1" | "H4" | "H1"
+  if(r.biasD1 && (bst===undefined || bst==="D1")){
+    const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`${cfg.topLabel} bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t);
+  }
+  if(r.dirH4 && (bst===undefined || bst==="D1" || bst==="H4")){
+    const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`${cfg.midLabel} arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t);
+  }
+  if(bst==="H1" && r.dirH1){
+    // mode H1: D1/H4 disembunyikan (gak relevan), tampilkan H1 arah sbg gantinya -> ini yg
+    // BENERAN jadi dasar arah di mode ini.
+    const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H1 arah: ${biasLabel(r.dirH1)}`; tags.appendChild(t);
+  }
   if(r.hasPullback!==undefined){
     const t=document.createElement("span"); t.className = "tag " + (r.hasPullback ? "confirmed" : "smc-no");
     t.textContent = r.hasPullback ? `${cfg.lowLabel}: pullback OK` : `${cfg.lowLabel}: belum pullback`;
@@ -3527,9 +3569,23 @@ function buildSndCard(r, kind){
   div.appendChild(priceLine);
 
   const tags = document.createElement("div"); tags.className="tags";
-  if(r.biasD1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`D1 bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t); }
-  if(r.dirH4){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H4 arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t); }
-  if(r.dirH1){ const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H1 arah: ${biasLabel(r.dirH1)}`; tags.appendChild(t); }
+  // BUG FIX (tampilan, bukan logika arah): r.biasD1/r.dirH4/r.dirH1 SELALU dihitung & SELALU ikut
+  // di-return oleh Alur 2 (analyzeSmcSetupAlt) & SND (analyzeSndSetup) apapun biasStartTf-nya
+  // (D1/H4/H1) -> kalau mode "H1" (D1 & H4 sengaja di-skip dari gating arah), tag "D1 bias: turun"
+  // / "H4 arah: turun" dulu tetap nongol seolah2 itu yg nentuin arah, padahal diabaikan & arah
+  // sebenarnya murni dari H1 -> kartu kelihatan kontradiktif (tag bilang turun tp sinyal BUY).
+  // r.biasStartTf (undefined utk Alur 1/3 yg emang SELALU pakai D1->H4, jadi tag2 ini selalu
+  // relevan & tetap tampil spt biasa) dipakai buat nentuin tag mana yg BENERAN relevan tampil.
+  const bst = r.biasStartTf; // undefined (Alur1/3, selalu D1->H4) | "D1" | "H4" | "H1"
+  if(r.biasD1 && (bst===undefined || bst==="D1")){
+    const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`D1 bias: ${biasLabel(r.biasD1)}`; tags.appendChild(t);
+  }
+  if(r.dirH4 && (bst===undefined || bst==="D1" || bst==="H4")){
+    const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H4 arah: ${biasLabel(r.dirH4)}`; tags.appendChild(t);
+  }
+  if(r.dirH1 && bst==="H1"){
+    const t=document.createElement("span"); t.className="tag confirmed"; t.textContent=`H1 arah: ${biasLabel(r.dirH1)}`; tags.appendChild(t);
+  }
   if(r.zoneReached!==undefined){
     const t=document.createElement("span"); t.className = "tag " + (r.zoneReached ? "confirmed" : "smc-wait");
     t.textContent = r.zoneReached ? "M5: harga di zona" : "M5: blm masuk zona";
